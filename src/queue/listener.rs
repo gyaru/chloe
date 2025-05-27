@@ -30,12 +30,19 @@ impl QueueListener {
     }
 
     pub async fn start_listening(&self) {
-        info!("starting chloe queue listener");
+        info!(
+            event = "queue_listener_started",
+            "Starting chloe queue listener"
+        );
         loop {
             match self.process_queue().await {
                 Ok(_) => {}
                 Err(e) => {
-                    error!("Error processing queue: {:?}", e);
+                    error!(
+                        event = "queue_processing_error",
+                        error = ?e,
+                        "Error processing queue"
+                    );
                     sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -53,23 +60,40 @@ impl QueueListener {
                 let _queue_name = &values[0];
                 let message = &values[1];
 
-                info!("Fetched message from chloe-queue: {}", message);
+                info!(
+                    event = "queue_message_received",
+                    message_type = %message,
+                    queue = "chloe-queue",
+                    "Fetched message from queue"
+                );
 
                 match message.as_str() {
                     "updatePrompt" => {
                         update_prompt::handle_update_prompt(message).await;
                     }
                     "updateSettings" => {
-                        settings_update::handle_update_settings(
-                            message,
-                            &self.db_pool,
-                            &self.settings,
-                            &self.guild_service,
-                        )
-                        .await;
+                        let db_pool = self.db_pool.clone();
+                        let settings = self.settings.clone();
+                        let guild_service = Arc::clone(&self.guild_service);
+                        let message = message.to_string();
+                        
+                        // Spawn settings update in background to avoid blocking queue listener
+                        tokio::spawn(async move {
+                            settings_update::handle_update_settings(
+                                &message,
+                                &db_pool,
+                                &settings,
+                                &guild_service,
+                            )
+                            .await;
+                        });
                     }
                     _ => {
-                        warn!("Unknown message type received: {}", message);
+                        warn!(
+                            event = "unknown_queue_message",
+                            message_type = %message,
+                            "Unknown message type received"
+                        );
                     }
                 }
             }

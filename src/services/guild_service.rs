@@ -65,45 +65,6 @@ impl GuildService {
         }
     }
 
-    pub async fn is_ping_enabled(&self, guild_id: i64) -> bool {
-        self.get_guild_setting(guild_id, "ping_reply")
-            .await
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    }
-
-    pub async fn get_ping_response(&self, guild_id: i64, user_id: i64) -> Option<String> {
-        let (ping_enabled, is_admin) = tokio::join!(
-            self.is_ping_enabled(guild_id),
-            self.is_user_admin(guild_id, user_id)
-        );
-
-        if ping_enabled {
-            Some(if is_admin {
-                "Pong! 💅".to_string()
-            } else {
-                "Pong!".to_string()
-            })
-        } else {
-            None
-        }
-    }
-
-    pub async fn invalidate_settings_cache(&self, guild_id: i64) {
-        let mut cache = self.settings_cache.write().await;
-        cache.remove(&guild_id);
-        info!("Invalidated settings cache for guild {}", guild_id);
-    }
-
-    pub async fn invalidate_role_cache(&self, guild_id: i64, user_id: i64) {
-        let mut cache = self.role_cache.write().await;
-        cache.remove(&(guild_id, user_id));
-        info!(
-            "Invalidated role cache for user {} in guild {}",
-            user_id, guild_id
-        );
-    }
-
     pub async fn clear_all_caches(&self) {
         let mut settings_cache = self.settings_cache.write().await;
         let mut role_cache = self.role_cache.write().await;

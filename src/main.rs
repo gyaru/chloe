@@ -23,6 +23,7 @@ pub struct Data {
     db_pool: PgPool,
     settings: settings::Settings,
     guild_service: Arc<services::guild_service::GuildService>,
+    llm_service: Arc<services::llm_service::LlmService>,
 }
 
 #[tokio::main]
@@ -33,7 +34,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("starting chloe 💅💄");
+    info!(
+        event = "bot_startup",
+        "Starting chloe 💅💄"
+    );
 
     let redis_url = std::env::var("REDIS_URL").expect("Expected REDIS_URL in environment");
     let redis_client = redis::Client::open(redis_url)?;
@@ -50,18 +54,29 @@ async fn main() -> Result<()> {
         .connect(&postgres_url)
         .await?;
 
-    info!("connected to postgres database");
+    info!(
+        event = "database_connected",
+        database = "postgres",
+        "Connected to postgres database"
+    );
 
-    info!("connected to redis");
+    info!(
+        event = "database_connected",
+        database = "redis",
+        "Connected to redis"
+    );
 
     // Initialize services
     let app_settings = settings::Settings::new();
     let guild_service = Arc::new(services::guild_service::GuildService::new(db_pool.clone()));
+    let llm_service = Arc::new(services::llm_service::LlmService::new(Arc::new(app_settings.clone()))?);
+    
 
     let redis_client_for_framework = redis_client.clone();
     let db_pool_for_framework = db_pool.clone();
     let settings_for_framework = app_settings.clone();
     let guild_service_for_framework = Arc::clone(&guild_service);
+    let llm_service_for_framework = Arc::clone(&llm_service);
 
     let queue_listener = queue::QueueListener::new(
         redis_client.clone(),
@@ -83,37 +98,60 @@ async fn main() -> Result<()> {
             let db_pool = db_pool_for_framework;
             let settings = settings_for_framework;
             let guild_service = guild_service_for_framework;
+            let llm_service = llm_service_for_framework;
 
             Box::pin(async move {
                 if let Err(e) = schema::initialize_database(&db_pool).await {
-                    error!("Failed to initialize database: {:?}", e);
+                    error!(
+                        event = "database_initialization_failed",
+                        error = ?e,
+                        "Failed to initialize database"
+                    );
                 }
 
                 if let Err(e) = schema::ensure_global_settings(&db_pool).await {
-                    error!("Failed to ensure global settings: {:?}", e);
+                    error!(
+                        event = "global_settings_ensure_failed",
+                        error = ?e,
+                        "Failed to ensure global settings"
+                    );
                 }
 
                 let current_guilds: Vec<_> = ctx.cache.guilds().iter().cloned().collect();
                 if let Err(e) = schema::sync_guilds(&db_pool, &current_guilds, ctx).await {
-                    error!("Failed to sync guilds: {:?}", e);
+                    error!(
+                        event = "guild_sync_failed",
+                        error = ?e,
+                        guild_count = current_guilds.len(),
+                        "Failed to sync guilds"
+                    );
                 } else {
                     info!(
-                        "Successfully synced {} guilds to database",
-                        current_guilds.len()
+                        event = "guilds_synced",
+                        guild_count = current_guilds.len(),
+                        "Successfully synced guilds to database"
                     );
                 }
 
                 if let Err(e) = settings.load_from_database(&db_pool).await {
-                    error!("Failed to load settings: {:?}", e);
+                    error!(
+                        event = "settings_load_failed",
+                        error = ?e,
+                        "Failed to load settings"
+                    );
                 }
 
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                info!("commands registered");
+                info!(
+                    event = "commands_registered",
+                    "Commands registered globally"
+                );
                 Ok(Data {
                     redis_client,
                     db_pool,
                     settings,
                     guild_service,
+                    llm_service,
                 })
             })
         })
@@ -127,6 +165,7 @@ async fn main() -> Result<()> {
         .framework(framework)
         .event_handler(reactions::llm_handler::LLMHandler {
             guild_service: Arc::clone(&guild_service),
+            llm_service: Arc::clone(&llm_service),
         })
         .await;
 
