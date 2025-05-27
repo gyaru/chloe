@@ -1,20 +1,24 @@
-use tokio_postgres::{Client, Error as PgError};
-use tracing::{info, error};
+use sqlx::{PgPool, Row};
+use tracing::info;
 
 pub struct Database {
-    client: Client,
+    pool: PgPool,
 }
 
 impl Database {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
-    pub async fn test_connection(&self) -> Result<(), PgError> {
-        let rows = self.client.query("SELECT 1", &[]).await?;
-        info!("Database connection test successful, returned {} rows", rows.len());
+    pub async fn test_connection(&self) -> Result<(), sqlx::Error> {
+        let row = sqlx::query("SELECT 1 as test")
+            .fetch_one(&self.pool)
+            .await?;
+        let test_value: i32 = row.get("test");
+        info!(
+            "Database connection test successful, returned: {}",
+            test_value
+        );
         Ok(())
     }
-
-    // Add more database operations here as needed
 }

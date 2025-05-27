@@ -1,20 +1,22 @@
 use redis::{Client, Commands, RedisResult};
 use tracing::{info, error, warn};
 use tokio::time::{sleep, Duration};
-use tokio_postgres::Client as PgClient;
+use sqlx::PgPool;
 use std::sync::Arc;
 use crate::settings::Settings;
+use crate::services::guild_service::GuildService;
 use super::{update_prompt, settings_update};
 
 pub struct QueueListener {
     client: Client,
-    postgres_client: Arc<PgClient>,
+    db_pool: PgPool,
     settings: Settings,
+    guild_service: Arc<GuildService>,
 }
 
 impl QueueListener {
-    pub fn new(client: Client, postgres_client: Arc<PgClient>, settings: Settings) -> Self {
-        Self { client, postgres_client, settings }
+    pub fn new(client: Client, db_pool: PgPool, settings: Settings, guild_service: Arc<GuildService>) -> Self {
+        Self { client, db_pool, settings, guild_service }
     }
 
     pub async fn start_listening(&self) {
@@ -48,7 +50,7 @@ impl QueueListener {
                         update_prompt::handle_update_prompt(message).await;
                     },
                     "updateSettings" => {
-                        settings_update::handle_update_settings(message, &self.postgres_client, &self.settings).await;
+                        settings_update::handle_update_settings(message, &self.db_pool, &self.settings, &self.guild_service).await;
                     },
                     _ => {
                         warn!("Unknown message type received: {}", message);

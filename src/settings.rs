@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio_postgres::{Client, Error as PgError};
+use sqlx::{PgPool, Row};
 use serde_json::Value;
-use tracing::{info, error};
+use tracing::info;
 
 #[derive(Clone)]
 pub struct Settings {
@@ -16,14 +16,13 @@ impl Settings {
         }
     }
 
-    pub async fn load_from_database(&self, db_client: &Client) -> Result<(), PgError> {
+    pub async fn load_from_database(&self, db_pool: &PgPool) -> Result<(), sqlx::Error> {
         info!("Loading settings from database...");
         
-        let query = "SELECT settings FROM chloe ORDER BY date_modified DESC LIMIT 1";
-        let rows = db_client.query(query, &[]).await?;
-        
-        if let Some(row) = rows.first() {
-            let settings_json: Value = row.get(0);
+        // Try to get the most recent settings
+        if let Ok(row) = sqlx::query("SELECT settings FROM chloe_guilds_settings ORDER BY modified_at DESC LIMIT 1")
+            .fetch_one(db_pool).await {
+            let settings_json: Value = row.get("settings");
             let mut data = self.data.write().await;
             *data = Some(settings_json.clone());
             
@@ -43,8 +42,8 @@ impl Settings {
         data.clone()
     }
 
-    pub async fn reload_from_database(&self, db_client: &Client) -> Result<(), PgError> {
+    pub async fn reload_from_database(&self, db_pool: &PgPool) -> Result<(), sqlx::Error> {
         info!("Reloading settings from database...");
-        self.load_from_database(db_client).await
+        self.load_from_database(db_pool).await
     }
 }
