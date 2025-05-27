@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![commands::ping::ping()],
+            commands: vec![commands::ping::ping(), commands::status::status()],
             ..Default::default()
         })
         .setup(move |ctx, _ready, framework| {
@@ -87,6 +87,10 @@ async fn main() -> Result<()> {
             Box::pin(async move {
                 if let Err(e) = schema::initialize_database(&db_pool).await {
                     error!("Failed to initialize database: {:?}", e);
+                }
+
+                if let Err(e) = schema::ensure_global_settings(&db_pool).await {
+                    error!("Failed to ensure global settings: {:?}", e);
                 }
 
                 let current_guilds: Vec<_> = ctx.cache.guilds().iter().cloned().collect();
@@ -121,7 +125,7 @@ async fn main() -> Result<()> {
 
     let client = ClientBuilder::new(token, intents)
         .framework(framework)
-        .event_handler(reactions::combined_handler::CombinedHandler {
+        .event_handler(reactions::llm_handler::LLMHandler {
             guild_service: Arc::clone(&guild_service),
         })
         .await;

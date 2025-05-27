@@ -1,49 +1,59 @@
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use sqlx::{PgPool, Row};
-use serde_json::Value;
 use tracing::info;
 
 #[derive(Clone)]
 pub struct Settings {
-    data: Arc<RwLock<Option<Value>>>,
+    global_data: Arc<RwLock<GlobalSettings>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlobalSettings {
+    pub prompt: String,
 }
 
 impl Settings {
     pub fn new() -> Self {
         Self {
-            data: Arc::new(RwLock::new(None)),
+            global_data: Arc::new(RwLock::new(GlobalSettings {
+                prompt: "You're Chloe, a discord bot.".to_string(),
+            })),
         }
     }
 
     pub async fn load_from_database(&self, db_pool: &PgPool) -> Result<(), sqlx::Error> {
-        info!("Loading settings from database...");
-        
-        // Try to get the most recent settings
-        if let Ok(row) = sqlx::query("SELECT settings FROM chloe_guilds_settings ORDER BY modified_at DESC LIMIT 1")
-            .fetch_one(db_pool).await {
-            let settings_json: Value = row.get("settings");
-            let mut data = self.data.write().await;
-            *data = Some(settings_json.clone());
-            
-            // prettify~
-            let pretty_json = serde_json::to_string_pretty(&settings_json)
-                .unwrap_or_else(|_| "Failed to prettify JSON".to_string());
-            info!("Settings loaded successfully:\n{}", pretty_json);
-        } else {
-            info!("No settings found in database");
-        }
-        
-        Ok(())
+        info!("Loading global settings from database...");
+        self.load_global_settings(db_pool).await
     }
 
-    pub async fn get(&self) -> Option<Value> {
-        let data = self.data.read().await;
+    pub async fn get_global_settings(&self) -> GlobalSettings {
+        let data = self.global_data.read().await;
         data.clone()
     }
 
     pub async fn reload_from_database(&self, db_pool: &PgPool) -> Result<(), sqlx::Error> {
         info!("Reloading settings from database...");
         self.load_from_database(db_pool).await
+    }
+
+    pub async fn load_global_settings(&self, db_pool: &PgPool) -> Result<(), sqlx::Error> {
+        if let Ok(row) = sqlx::query("SELECT prompt FROM chloe_settings WHERE id = 1")
+            .fetch_one(db_pool)
+            .await
+        {
+            let prompt: String = row.get("prompt");
+            let mut data = self.global_data.write().await;
+            data.prompt = prompt.clone();
+            info!("Global settings loaded: prompt = '{}'", prompt);
+        } else {
+            info!("No global settings found, using defaults");
+        }
+        Ok(())
+    }
+
+    pub async fn reload_global_settings(&self, db_pool: &PgPool) -> Result<(), sqlx::Error> {
+        info!("Reloading global settings from database...");
+        self.load_global_settings(db_pool).await
     }
 }

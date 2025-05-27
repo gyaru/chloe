@@ -32,7 +32,7 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
     let create_settings_table = r#"
         CREATE TABLE IF NOT EXISTS chloe_guilds_settings (
             id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
-            guild_id VARCHAR(255) REFERENCES chloe_guilds(id),
+            guild_id VARCHAR(255) UNIQUE REFERENCES chloe_guilds(id),
             settings JSON NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -52,6 +52,17 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
         )
     "#;
 
+    // create chloe_settings table for global bot settings
+    let create_global_settings_table = r#"
+        CREATE TABLE IF NOT EXISTS chloe_settings (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            prompt TEXT NOT NULL DEFAULT 'You''re Chloe, a discord bot.',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT single_row CHECK (id = 1)
+        )
+    "#;
+
     // cxecute table creation
     sqlx::query(create_users_table).execute(db_pool).await?;
     info!("created/verified chloe_users table");
@@ -66,6 +77,11 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(db_pool)
         .await?;
     info!("created/verified chloe_guild_users table");
+
+    sqlx::query(create_global_settings_table)
+        .execute(db_pool)
+        .await?;
+    info!("created/verified chloe_settings table");
 
     // Create performance indexes
     create_performance_indexes(db_pool).await?;
@@ -192,6 +208,22 @@ pub async fn sync_guilds(
     }
 
     info!("Guild synchronization complete");
+    Ok(())
+}
+
+pub async fn ensure_global_settings(db_pool: &PgPool) -> Result<(), sqlx::Error> {
+    let existing_settings = sqlx::query("SELECT id FROM chloe_settings WHERE id = 1")
+        .fetch_optional(db_pool)
+        .await?;
+
+    if existing_settings.is_none() {
+        sqlx::query("INSERT INTO chloe_settings (id, prompt) VALUES (1, $1)")
+            .bind("You're Chloe, a discord bot.")
+            .execute(db_pool)
+            .await?;
+        info!("Created default global settings");
+    }
+
     Ok(())
 }
 
