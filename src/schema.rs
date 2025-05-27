@@ -232,7 +232,8 @@ pub async fn create_default_settings(
     guild_internal_id: &str,
 ) -> Result<(), sqlx::Error> {
     let default_settings = json!({
-        "ping_reply": false
+        "ping_reply": false,
+        "llm": false
     });
 
     let existing_settings = sqlx::query("SELECT id FROM chloe_guilds_settings WHERE guild_id = $1")
