@@ -150,9 +150,9 @@ impl LLMHandler {
     ) -> Vec<MessageContext> {
         let mut recent_messages = Vec::new();
 
-        // get 15 messages from the channel
+        // get 50 messages from the channel
         if let Ok(messages) = channel_id
-            .messages(http, serenity::builder::GetMessages::new().limit(15))
+            .messages(http, serenity::builder::GetMessages::new().limit(50))
             .await
         {
             for msg in messages.iter() {

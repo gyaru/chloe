@@ -87,30 +87,6 @@ impl LlmService {
         self.send_request(&url, &combined_prompt).await
     }
 
-    pub async fn prompt_with_cached_system(&self, prompt: &str) -> Result<String> {
-        // Fallback method for when no context is available
-        let global_settings = self.settings.get_global_settings().await;
-        let optimized_user_prompt = self.optimize_user_prompt(prompt);
-        let optimized_system_prompt = self.optimize_system_prompt(&global_settings.prompt);
-
-        let original_tokens =
-            self.estimate_tokens(&global_settings.prompt) + self.estimate_tokens(prompt);
-        let optimized_tokens = self.estimate_tokens(&optimized_system_prompt)
-            + self.estimate_tokens(&optimized_user_prompt);
-
-        if original_tokens != optimized_tokens {
-            info!(
-                event = "token_optimization",
-                original_tokens = original_tokens,
-                optimized_tokens = optimized_tokens,
-                tokens_saved = original_tokens - optimized_tokens,
-                "Token optimization applied"
-            );
-        }
-
-        self.prompt_gemini(&optimized_system_prompt, &optimized_user_prompt)
-            .await
-    }
 
     pub async fn prompt_with_context(&self, context: ConversationContext) -> Result<String> {
         let global_settings = self.settings.get_global_settings().await;
@@ -138,40 +114,12 @@ impl LlmService {
             .await
     }
 
-    async fn add_message_to_history(&self, message: MessageContext) {
-        let mut history = self.conversation_history.write().await;
-        let channel_history = history
-            .entry(message.channel_id)
-            .or_insert_with(VecDeque::new);
-
-        let old_len = channel_history.len();
-        channel_history.push_back(message.clone());
-
-        // Keep only last 5 messages per channel
-        while channel_history.len() > 5 {
-            channel_history.pop_front();
-        }
-
-        info!(
-            event = "conversation_history_updated",
-            channel_id = message.channel_id,
-            user = %message.user_display_name,
-            is_bot = message.is_bot,
-            message_chars = message.content.len(),
-            history_size = channel_history.len(),
-            was_trimmed = old_len >= 5,
-            "Added message to conversation history"
-        );
-    }
-
     fn enrich_system_prompt_with_context(
         &self,
         base_prompt: &str,
         context: &ConversationContext,
     ) -> String {
         let mut enriched = self.optimize_system_prompt(base_prompt);
-
-        // Add user information for Discord mentions
         if !context.user_info.is_empty() {
             enriched.push_str("\n\n## User Information\n");
             enriched.push_str(
@@ -192,7 +140,6 @@ impl LlmService {
             }
         }
 
-        // Add context section
         enriched.push_str("\n## Current Context\n");
         enriched.push_str(&format!("Current user: {}\n", context.current_user));
         enriched.push_str(&format!(
