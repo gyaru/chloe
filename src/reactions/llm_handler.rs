@@ -83,11 +83,32 @@ impl EventHandler for LLMHandler {
                             )
                             .await;
 
+                            let referenced_message = if let Some(ref ref_msg) = msg_clone.referenced_message {
+                                let ref_user_display_name = if ref_msg.author.bot {
+                                    "Chloe".to_string()
+                                } else {
+                                    ref_msg.author_nick(&http).await.unwrap_or_else(|| {
+                                        ref_msg.author.display_name().to_string()
+                                    })
+                                };
+                                
+                                Some(MessageContext {
+                                    user_display_name: ref_user_display_name,
+                                    user_id: ref_msg.author.id.get(),
+                                    content: ref_msg.content.clone(),
+                                    is_bot: ref_msg.author.bot,
+                                    channel_id: ref_msg.channel_id.get(),
+                                })
+                            } else {
+                                None
+                            };
+
                             let context = ConversationContext {
                                 current_user: user_display_name,
                                 current_message: msg_clone.content.clone(),
                                 recent_messages,
                                 user_info,
+                                referenced_message,
                             };
 
                             match llm_service.prompt_with_context(context).await {

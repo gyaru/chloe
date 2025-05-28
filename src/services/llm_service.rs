@@ -32,6 +32,7 @@ pub struct ConversationContext {
     pub current_message: String,
     pub recent_messages: Vec<MessageContext>,
     pub user_info: Vec<UserInfo>,
+    pub referenced_message: Option<MessageContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -142,6 +143,17 @@ impl LlmService {
 
         enriched.push_str("\n## Current Context\n");
         enriched.push_str(&format!("Current user: {}\n", context.current_user));
+        
+        if let Some(ref referenced_msg) = context.referenced_message {
+            enriched.push_str("\n## Message Being Replied To\n");
+            enriched.push_str(&format!(
+                "{}: {}\n",
+                referenced_msg.user_display_name,
+                self.optimize_user_prompt_preserve_mentions(&referenced_msg.content)
+            ));
+            enriched.push_str("\n## Current Reply\n");
+        }
+        
         enriched.push_str(&format!(
             "Current message: {}\n",
             self.optimize_user_prompt(&context.current_message)
