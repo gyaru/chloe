@@ -55,17 +55,17 @@ impl EventHandler for LLMHandler {
                                 "Started typing indicator"
                             );
 
-                            let recent_messages =
-                                Self::get_recent_messages(&http, msg_clone.channel_id, &msg_clone)
+                            let reply_chain_messages =
+                                Self::get_reply_chain_context(&http, &msg_clone)
                                     .await;
 
                             info!(
-                                event = "conversation_context_gathered",
+                                event = "reply_chain_context_gathered",
                                 user = %msg_clone.author.name,
                                 channel_id = %msg_clone.channel_id,
-                                message_count = recent_messages.len(),
-                                messages = ?recent_messages.iter().map(|m| format!("{}: {}", m.user_display_name, m.content)).collect::<Vec<_>>(),
-                                "Gathered conversation context"
+                                message_count = reply_chain_messages.len(),
+                                messages = ?reply_chain_messages.iter().map(|m| format!("{}: {}", m.user_display_name, m.content)).collect::<Vec<_>>(),
+                                "Gathered reply chain context"
                             );
                             let user_display_name =
                                 msg_clone.author_nick(&http).await.unwrap_or_else(|| {
@@ -76,7 +76,7 @@ impl EventHandler for LLMHandler {
 
                             let bot_user_id = ctx.cache.current_user().id.get();
                             let user_info = Self::gather_user_info(
-                                &recent_messages,
+                                &reply_chain_messages,
                                 &msg_clone,
                                 &user_display_name,
                                 bot_user_id,
@@ -106,7 +106,7 @@ impl EventHandler for LLMHandler {
                             let context = ConversationContext {
                                 current_user: user_display_name,
                                 current_message: msg_clone.content.clone(),
-                                recent_messages,
+                                recent_messages: reply_chain_messages,
                                 user_info,
                                 referenced_message,
                             };
@@ -162,55 +162,52 @@ impl EventHandler for LLMHandler {
 }
 
 impl LLMHandler {
-    async fn get_recent_messages(
+    async fn get_reply_chain_context(
         http: &Arc<serenity::http::Http>,
-        channel_id: serenity::model::id::ChannelId,
         current_msg: &Message,
     ) -> Vec<MessageContext> {
-        let mut recent_messages = Vec::new();
-
-        // get 50 messages from the channel
-        if let Ok(messages) = channel_id
-            .messages(http, serenity::builder::GetMessages::new().limit(50))
-            .await
-        {
-            for msg in messages.iter() {
-                if msg.id == current_msg.id {
-                    continue;
-                }
-
-                // skip old messages
-                if msg.timestamp < current_msg.timestamp {
-                    if msg.content.is_empty() {
-                        continue;
-                    }
-
-                    let user_display_name = if msg.author.bot {
-                        "Chloe".to_string()
-                    } else {
-                        msg.author_nick(http).await.unwrap_or_else(|| {
-                            msg.author
-                                .display_name().to_string()
-                        })
-                    };
-
-                    recent_messages.push(MessageContext {
-                        user_display_name,
-                        user_id: msg.author.id.get(),
-                        content: msg.content.clone(),
-                        is_bot: msg.author.bot,
-                        channel_id: channel_id.get(),
-                    });
-
-                    if recent_messages.len() >= 8 {
-                        break;
-                    }
-                }
+        let mut reply_chain = Vec::new();
+        let mut msg_to_follow = current_msg.referenced_message.as_ref().map(|m| m.as_ref());
+        
+        // follow the reply chain up to 5 messages
+        while let Some(msg) = msg_to_follow {
+            if reply_chain.len() >= 5 {
+                break;
             }
+            
+            if msg.content.is_empty() {
+                msg_to_follow = msg.referenced_message.as_ref().map(|m| m.as_ref());
+                continue;
+            }
+            
+            let user_display_name = if msg.author.bot {
+                "Chloe".to_string()
+            } else {
+                msg.author_nick(http).await.unwrap_or_else(|| {
+                    msg.author.display_name().to_string()
+                })
+            };
+            
+            reply_chain.push(MessageContext {
+                user_display_name,
+                user_id: msg.author.id.get(),
+                content: msg.content.clone(),
+                is_bot: msg.author.bot,
+                channel_id: msg.channel_id.get(),
+            });
+            
+            // Follow the chain if this message is also a reply
+            msg_to_follow = msg.referenced_message.as_ref().map(|m| m.as_ref());
         }
-
-        recent_messages.reverse();
-        recent_messages
+        
+        // only return the chain if it has at least 2 messages
+        if reply_chain.len() >= 2 {
+            // reverse to get chronological order (oldest first)
+            reply_chain.reverse();
+            reply_chain
+        } else {
+            Vec::new()
+        }
     }
 
     async fn gather_user_info(
