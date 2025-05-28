@@ -71,9 +71,7 @@ impl EventHandler for LLMHandler {
                                 msg_clone.author_nick(&http).await.unwrap_or_else(|| {
                                     msg_clone
                                         .author
-                                        .global_name
-                                        .clone()
-                                        .unwrap_or_else(|| msg_clone.author.name.clone())
+                                        .display_name().to_string()
                                 });
 
                             let bot_user_id = ctx.cache.current_user().id.get();
@@ -171,9 +169,7 @@ impl LLMHandler {
                     } else {
                         msg.author_nick(http).await.unwrap_or_else(|| {
                             msg.author
-                                .global_name
-                                .clone()
-                                .unwrap_or_else(|| msg.author.name.clone())
+                                .display_name().to_string()
                         })
                     };
 
