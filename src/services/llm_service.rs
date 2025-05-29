@@ -14,12 +14,20 @@ pub struct MessageContext {
     pub content: String,
     pub is_bot: bool,
     pub channel_id: u64,
+    pub images: Vec<ImageData>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImageData {
+    pub base64_data: String,
+    pub mime_type: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct ConversationContext {
     pub current_user: String,
     pub current_message: String,
+    pub current_images: Vec<ImageData>,
     pub recent_messages: Vec<MessageContext>,
     pub user_info: Vec<UserInfo>,
     pub referenced_message: Option<MessageContext>,
@@ -89,10 +97,22 @@ impl LlmService {
             event = "context_aware_prompting",
             recent_messages_count = context.recent_messages.len(),
             current_user = %context.current_user,
+            images_count = context.current_images.len(),
             "Processing message with conversation context"
         );
 
-        self.prompt_gemini(&enriched_system_prompt, &context.current_message)
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={}",
+            self.api_key
+        );
+
+        let combined_prompt = if enriched_system_prompt.is_empty() {
+            context.current_message.clone()
+        } else {
+            enriched_system_prompt
+        };
+
+        self.send_request_with_images(&url, &combined_prompt, &context.current_images)
             .await
     }
 
@@ -122,12 +142,9 @@ impl LlmService {
             }
         }
 
-        enriched.push_str("\n## Current Context\n");
-        enriched.push_str(&format!("Current user: {}\n", context.current_user));
-        
-        // show reply chain context if there are messages, or just the referenced message if no chain
+        // add conversation context if available
         if !context.recent_messages.is_empty() {
-            enriched.push_str("\n## Reply Chain Context:\n");
+            enriched.push_str("\n## Recent Conversation:\n");
             for msg in context.recent_messages.iter() {
                 if msg.is_bot {
                     enriched.push_str(&format!("Chloe: {}\n", msg.content));
@@ -139,19 +156,20 @@ impl LlmService {
                     ));
                 }
             }
-            enriched.push_str("\n## Current Reply\n");
+            // Note: Don't add referenced_message here since it's already the first item in recent_messages
         } else if let Some(ref referenced_msg) = context.referenced_message {
-            enriched.push_str("\n## Message Being Replied To\n");
+            // No chain, just show the single referenced message
+            enriched.push_str("\n## Previous Message:\n");
             enriched.push_str(&format!(
                 "{}: {}\n",
                 referenced_msg.user_display_name,
                 referenced_msg.content
             ));
-            enriched.push_str("\n## Current Reply\n");
         }
         
         enriched.push_str(&format!(
-            "Current message: {}\n",
+            "\n## Current Message to Respond To:\n{}: {}",
+            context.current_user,
             context.current_message
         ));
 
@@ -166,14 +184,28 @@ impl LlmService {
 
 
     async fn send_request(&self, url: &str, combined_prompt: &str) -> Result<String> {
+        self.send_request_with_images(url, combined_prompt, &[]).await
+    }
+
+    async fn send_request_with_images(&self, url: &str, combined_prompt: &str, images: &[ImageData]) -> Result<String> {
+        let mut parts = vec![json!({
+            "text": combined_prompt
+        })];
+
+        // Add images to the request
+        for image in images {
+            parts.push(json!({
+                "inline_data": {
+                    "mime_type": image.mime_type,
+                    "data": image.base64_data
+                }
+            }));
+        }
+
         let request_body = json!({
             "contents": [
                 {
-                    "parts": [
-                        {
-                            "text": combined_prompt
-                        }
-                    ]
+                    "parts": parts
                 }
             ]
         });

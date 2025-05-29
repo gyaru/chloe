@@ -163,10 +163,10 @@ async fn main() -> Result<()> {
 
     let client = ClientBuilder::new(token, intents)
         .framework(framework)
-        .event_handler(reactions::llm_handler::LLMHandler {
-            guild_service: Arc::clone(&guild_service),
-            llm_service: Arc::clone(&llm_service),
-        })
+        .event_handler(reactions::llm_handler::LLMHandler::new(
+            Arc::clone(&guild_service),
+            Arc::clone(&llm_service),
+        ))
         .await;
 
     client?.start().await?;
