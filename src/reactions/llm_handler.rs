@@ -98,9 +98,9 @@ impl ImageProcessor {
             "Starting to trace reply chain"
         );
         
-        // follow the reply chain up to 5 messages
+        // follow the reply chain up to 15 messages
         while let Some(msg) = msg_to_follow {
-            if reply_chain.len() >= 5 {
+            if reply_chain.len() >= 15 {
                 break;
             }
             
@@ -163,7 +163,7 @@ impl ImageProcessor {
         }
         
         // if we have a short chain, try to supplement with recent channel history
-        if reply_chain.len() < 3 {
+        if reply_chain.len() < 8 {
             info!(
                 event = "supplementing_with_channel_history",
                 chain_length = reply_chain.len(),
@@ -213,9 +213,9 @@ impl ImageProcessor {
         let existing_ids: std::collections::HashSet<u64> = existing_chain.iter().map(|m| m.user_id).collect();
         
         // fetch recent messages from the channel
-        let messages = current_msg.channel_id.messages(http, serenity::builder::GetMessages::new().before(current_msg.id).limit(10)).await?;
+        let messages = current_msg.channel_id.messages(http, serenity::builder::GetMessages::new().before(current_msg.id).limit(20)).await?;
         
-        for msg in messages.iter().take(5) {
+        for msg in messages.iter().take(12) {
             // skip if we already have this message in the chain
             if existing_ids.contains(&msg.author.id.get()) {
                 continue;
@@ -244,7 +244,7 @@ impl ImageProcessor {
                 images,
             });
             
-            if context.len() >= 3 {
+            if context.len() >= 8 {
                 break;
             }
         }
@@ -364,15 +364,63 @@ impl EventHandler for LLMHandler {
                                 referenced_message,
                             };
 
-                            match llm_service.prompt_with_context(context).await {
-                                Ok(response) => {
-                                    if let Err(why) = msg_clone.reply(&http, response).await {
+                            // create a sender for immediate responses (two-part tool calls)
+                            let http_clone = Arc::clone(&http);
+                            let msg_clone_for_sender = msg_clone.clone();
+                            let sender = move |initial_text: String| {
+                                let http = Arc::clone(&http_clone);
+                                let msg = msg_clone_for_sender.clone();
+                                async move {
+                                    if let Err(why) = msg.reply(&http, initial_text).await {
                                         error!(
-                                            event = "llm_response_send_failed",
-                                            user = %msg_clone.author.name,
+                                            event = "initial_response_send_failed",
+                                            user = %msg.author.name,
                                             error = ?why,
-                                            "Error sending LLM response"
+                                            "Error sending initial LLM response"
                                         );
+                                    }
+                                }
+                            };
+
+                            // create a typing starter for tool execution
+                            let msg_clone_for_typing = msg_clone.clone();
+                            let http_clone_for_typing = Arc::clone(&http);
+                            let typing_starter = move || {
+                                let msg = msg_clone_for_typing.clone();
+                                let http = http_clone_for_typing.clone();
+                                async move {
+                                    let _typing = msg.channel_id.start_typing(&http);
+                                    info!(
+                                        event = "tool_execution_typing_started",
+                                        user = %msg.author.name,
+                                        channel_id = %msg.channel_id,
+                                        "Started typing indicator for tool execution"
+                                    );
+                                }
+                            };
+
+                            match llm_service.prompt_with_context_and_sender(context, Some(sender), Some(typing_starter)).await {
+                                Ok((response, initial_sent)) => {
+                                    if initial_sent {
+                                        // this is a follow-up to a two-part response, send as regular message
+                                        if let Err(why) = msg_clone.channel_id.say(&http, response).await {
+                                            error!(
+                                                event = "follow_up_response_send_failed",
+                                                user = %msg_clone.author.name,
+                                                error = ?why,
+                                                "Error sending follow-up LLM response"
+                                            );
+                                        }
+                                    } else {
+                                        // regular single response, send as reply
+                                        if let Err(why) = msg_clone.reply(&http, response).await {
+                                            error!(
+                                                event = "llm_response_send_failed",
+                                                user = %msg_clone.author.name,
+                                                error = ?why,
+                                                "Error sending LLM response"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(err) => {

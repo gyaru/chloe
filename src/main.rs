@@ -14,6 +14,7 @@ mod redis_client;
 mod schema;
 mod services;
 mod settings;
+mod tools;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
