@@ -1,256 +1,15 @@
 use crate::services::{
     guild_service::GuildService,
-    llm_service::{ConversationContext, LlmService, MessageContext, UserInfo, ImageData},
+    llm_service::{ConversationContext, LlmService, MessageContext, UserInfo},
 };
+use crate::utils::ImageProcessor;
 use serenity::{async_trait, model::channel::Message, prelude::*};
 use std::{collections::HashSet, sync::Arc};
 use tracing::{error, info};
-use reqwest::Client;
 
 pub struct LLMHandler {
     pub guild_service: Arc<GuildService>,
     pub llm_service: Arc<LlmService>,
-    http_client: Client,
-}
-
-struct ImageProcessor {
-    http_client: Client,
-}
-
-impl ImageProcessor {
-    async fn download_and_encode_image(&self, url: &str) -> Result<ImageData, Box<dyn std::error::Error + Send + Sync>> {
-        info!(
-            event = "downloading_image",
-            url = url,
-            "Downloading image from Discord"
-        );
-
-        let response = self.http_client.get(url).send().await?;
-        let content_type = response.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .to_string();
-        
-        let bytes = response.bytes().await?;
-        let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-        
-        info!(
-            event = "image_encoded",
-            url = url,
-            mime_type = %content_type,
-            size_bytes = bytes.len(),
-            "Successfully encoded image to base64"
-        );
-
-        Ok(ImageData {
-            base64_data,
-            mime_type: content_type,
-        })
-    }
-
-    async fn process_message_images(&self, msg: &Message) -> Vec<ImageData> {
-        let mut images = Vec::new();
-        
-        for attachment in &msg.attachments {
-            if attachment.content_type.as_ref()
-                .map(|ct| ct.starts_with("image/"))
-                .unwrap_or(false) 
-            {
-                match self.download_and_encode_image(&attachment.url).await {
-                    Ok(image_data) => {
-                        info!(
-                            event = "image_processed",
-                            attachment_id = attachment.id.get(),
-                            filename = %attachment.filename,
-                            "Successfully processed image attachment"
-                        );
-                        images.push(image_data);
-                    }
-                    Err(e) => {
-                        error!(
-                            event = "image_processing_failed",
-                            attachment_id = attachment.id.get(),
-                            filename = %attachment.filename,
-                            error = ?e,
-                            "Failed to process image attachment"
-                        );
-                    }
-                }
-            }
-        }
-        
-        images
-    }
-
-    async fn get_reply_chain_context(
-        &self,
-        http: &Arc<serenity::http::Http>,
-        current_msg: &Message,
-    ) -> Vec<MessageContext> {
-        let mut reply_chain = Vec::new();
-        let mut msg_to_follow = current_msg.referenced_message.as_ref().map(|m| m.as_ref());
-        
-        info!(
-            event = "starting_reply_chain_trace",
-            current_msg_id = current_msg.id.get(),
-            has_referenced_msg = msg_to_follow.is_some(),
-            "Starting to trace reply chain"
-        );
-        
-        // follow the reply chain up to 15 messages
-        while let Some(msg) = msg_to_follow {
-            if reply_chain.len() >= 15 {
-                break;
-            }
-            
-            info!(
-                event = "processing_chain_message",
-                msg_id = msg.id.get(),
-                content = %msg.content,
-                author = %msg.author.name,
-                has_next_ref = msg.referenced_message.is_some(),
-                next_ref_id = msg.referenced_message.as_ref().map(|m| m.id.get()),
-                "Processing message in reply chain"
-            );
-            
-            if msg.content.is_empty() {
-                info!(
-                    event = "skipping_empty_message",
-                    msg_id = msg.id.get(),
-                    "Skipping empty message in chain"
-                );
-                msg_to_follow = msg.referenced_message.as_ref().map(|m| m.as_ref());
-                continue;
-            }
-            
-            let user_display_name = if msg.author.bot {
-                "Chloe".to_string()
-            } else {
-                msg.author_nick(http).await.unwrap_or_else(|| {
-                    msg.author.display_name().to_string()
-                })
-            };
-            
-            let images = self.process_message_images(msg).await;
-            
-            reply_chain.push(MessageContext {
-                user_display_name,
-                user_id: msg.author.id.get(),
-                content: msg.content.clone(),
-                is_bot: msg.author.bot,
-                channel_id: msg.channel_id.get(),
-                images,
-            });
-            
-            // Follow the chain if this message is also a reply
-            if let Some(ref_msg) = &msg.referenced_message {
-                info!(
-                    event = "found_next_reference",
-                    current_msg_id = msg.id.get(),
-                    next_ref_id = ref_msg.id.get(),
-                    "Found next message in chain"
-                );
-                msg_to_follow = Some(ref_msg.as_ref());
-            } else {
-                info!(
-                    event = "chain_end_reached",
-                    current_msg_id = msg.id.get(),
-                    "No more references found, ending chain"
-                );
-                msg_to_follow = None;
-            }
-        }
-        
-        // if we have a short chain, try to supplement with recent channel history
-        if reply_chain.len() < 8 {
-            info!(
-                event = "supplementing_with_channel_history",
-                chain_length = reply_chain.len(),
-                "Reply chain is short, fetching recent channel history"
-            );
-            
-            match self.get_recent_channel_context(http, current_msg, &reply_chain).await {
-                Ok(mut additional_context) => {
-                    additional_context.extend(reply_chain);
-                    reply_chain = additional_context;
-                    info!(
-                        event = "supplemented_context",
-                        new_chain_length = reply_chain.len(),
-                        "Successfully supplemented with channel history"
-                    );
-                }
-                Err(e) => {
-                    info!(
-                        event = "failed_to_supplement",
-                        error = ?e,
-                        "Failed to fetch channel history"
-                    );
-                }
-            }
-        }
-        
-        info!(
-            event = "reply_chain_complete",
-            chain_length = reply_chain.len(),
-            "Completed reply chain tracing"
-        );
-        
-        // reverse to get chronological order (oldest first) and return the chain
-        if !reply_chain.is_empty() {
-            reply_chain.reverse();
-        }
-        reply_chain
-    }
-
-    async fn get_recent_channel_context(
-        &self,
-        http: &Arc<serenity::http::Http>,
-        current_msg: &Message,
-        existing_chain: &[MessageContext],
-    ) -> Result<Vec<MessageContext>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut context = Vec::new();
-        let existing_ids: std::collections::HashSet<u64> = existing_chain.iter().map(|m| m.user_id).collect();
-        
-        // fetch recent messages from the channel
-        let messages = current_msg.channel_id.messages(http, serenity::builder::GetMessages::new().before(current_msg.id).limit(20)).await?;
-        
-        for msg in messages.iter().take(12) {
-            // skip if we already have this message in the chain
-            if existing_ids.contains(&msg.author.id.get()) {
-                continue;
-            }
-            
-            if msg.content.is_empty() || msg.author.bot && msg.author.id != http.get_current_user().await?.id {
-                continue;
-            }
-            
-            let user_display_name = if msg.author.bot {
-                "Chloe".to_string()
-            } else {
-                msg.author_nick(http).await.unwrap_or_else(|| {
-                    msg.author.display_name().to_string()
-                })
-            };
-            
-            let images = self.process_message_images(msg).await;
-            
-            context.push(MessageContext {
-                user_display_name,
-                user_id: msg.author.id.get(),
-                content: msg.content.clone(),
-                is_bot: msg.author.bot,
-                channel_id: msg.channel_id.get(),
-                images,
-            });
-            
-            if context.len() >= 8 {
-                break;
-            }
-        }
-        
-        Ok(context)
-    }
 }
 
 #[async_trait]
@@ -258,6 +17,48 @@ impl EventHandler for LLMHandler {
     async fn message(&self, ctx: Context, msg: Message) {
         if msg.author.bot {
             return;
+        }
+
+        // Check for random reply first
+        if let Some(guild_id) = msg.guild_id {
+            if let Some(random_reply_setting) = self.guild_service
+                .get_guild_setting(guild_id.get() as i64, "randomReply")
+                .await
+            {
+                if let Some(channel_array) = random_reply_setting.as_array() {
+                    for channel_value in channel_array {
+                        if let Some(channel_str) = channel_value.as_str() {
+                            if let Ok(target_channel_id) = channel_str.parse::<u64>() {
+                                if msg.channel_id.get() == target_channel_id {
+                                    // 1 in 30 chance to respond
+                                    let random_number: u32 = rand::random::<u32>() % 30 + 1;
+                                    
+                                    if random_number == 1 {
+                                        info!(
+                                            event = "random_reply_triggered",
+                                            user = %msg.author.name,
+                                            guild_id = %guild_id,
+                                            channel_id = %msg.channel_id,
+                                            "Random reply triggered (1/30 chance)"
+                                        );
+                                        
+                                        // Process this message with LLM if LLM is enabled
+                                        if let Some(llm_setting) = self.guild_service
+                                            .get_guild_setting(guild_id.get() as i64, "llm")
+                                            .await
+                                        {
+                                            if llm_setting.as_bool().unwrap_or(false) {
+                                                self.process_llm_message_silent(ctx.clone(), msg.clone()).await;
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         let should_respond = msg.mentions_me(&ctx.http).await.unwrap_or(false)
@@ -269,195 +70,7 @@ impl EventHandler for LLMHandler {
                 .unwrap_or(false));
 
         if should_respond {
-            if let Some(guild_id) = msg.guild_id {
-                let guild_service = Arc::clone(&self.guild_service);
-                let llm_service = Arc::clone(&self.llm_service);
-                let http_client = self.http_client.clone();
-                let http = Arc::clone(&ctx.http);
-                let msg_clone = msg.clone();
-
-                tokio::spawn(async move {
-                    if let Some(llm_setting) = guild_service
-                        .get_guild_setting(guild_id.get() as i64, "llm")
-                        .await
-                    {
-                        if llm_setting.as_bool().unwrap_or(false) {
-                            info!(
-                                event = "llm_response_triggered",
-                                user = %msg_clone.author.name,
-                                guild_id = %guild_id,
-                                channel_id = %msg_clone.channel_id,
-                                "LLM enabled - responding to message from user"
-                            );
-
-                            let _typing = msg_clone.channel_id.start_typing(&http);
-                            info!(
-                                event = "typing_indicator_started",
-                                user = %msg_clone.author.name,
-                                channel_id = %msg_clone.channel_id,
-                                "Started typing indicator"
-                            );
-
-                            // create a helper to handle image processing in the async closure
-                            let image_processor = ImageProcessor { http_client: http_client.clone() };
-                            
-                            let reply_chain_messages =
-                                image_processor.get_reply_chain_context(&http, &msg_clone)
-                                    .await;
-
-                            info!(
-                                event = "reply_chain_context_gathered",
-                                user = %msg_clone.author.name,
-                                channel_id = %msg_clone.channel_id,
-                                message_count = reply_chain_messages.len(),
-                                messages = ?reply_chain_messages.iter().map(|m| format!("{}: {}", m.user_display_name, m.content)).collect::<Vec<_>>(),
-                                "Gathered reply chain context"
-                            );
-                            let user_display_name =
-                                msg_clone.author_nick(&http).await.unwrap_or_else(|| {
-                                    msg_clone
-                                        .author
-                                        .display_name().to_string()
-                                });
-
-                            // process images from the current message
-                            let current_images = image_processor.process_message_images(&msg_clone).await;
-
-                            let bot_user_id = ctx.cache.current_user().id.get();
-                            let user_info = Self::gather_user_info(
-                                &reply_chain_messages,
-                                &msg_clone,
-                                &user_display_name,
-                                bot_user_id,
-                            )
-                            .await;
-
-                            let referenced_message = if let Some(ref ref_msg) = msg_clone.referenced_message {
-                                let ref_user_display_name = if ref_msg.author.bot {
-                                    "Chloe".to_string()
-                                } else {
-                                    ref_msg.author_nick(&http).await.unwrap_or_else(|| {
-                                        ref_msg.author.display_name().to_string()
-                                    })
-                                };
-                                
-                                let ref_images = image_processor.process_message_images(ref_msg).await;
-                                
-                                Some(MessageContext {
-                                    user_display_name: ref_user_display_name,
-                                    user_id: ref_msg.author.id.get(),
-                                    content: ref_msg.content.clone(),
-                                    is_bot: ref_msg.author.bot,
-                                    channel_id: ref_msg.channel_id.get(),
-                                    images: ref_images,
-                                })
-                            } else {
-                                None
-                            };
-
-                            let context = ConversationContext {
-                                current_user: user_display_name,
-                                current_message: msg_clone.content.clone(),
-                                current_images,
-                                recent_messages: reply_chain_messages,
-                                user_info,
-                                referenced_message,
-                            };
-
-                            // create a sender for immediate responses (two-part tool calls)
-                            let http_clone = Arc::clone(&http);
-                            let msg_clone_for_sender = msg_clone.clone();
-                            let sender = move |initial_text: String| {
-                                let http = Arc::clone(&http_clone);
-                                let msg = msg_clone_for_sender.clone();
-                                async move {
-                                    if let Err(why) = msg.reply(&http, initial_text).await {
-                                        error!(
-                                            event = "initial_response_send_failed",
-                                            user = %msg.author.name,
-                                            error = ?why,
-                                            "Error sending initial LLM response"
-                                        );
-                                    }
-                                }
-                            };
-
-                            // create a typing starter for tool execution
-                            let msg_clone_for_typing = msg_clone.clone();
-                            let http_clone_for_typing = Arc::clone(&http);
-                            let typing_starter = move || {
-                                let msg = msg_clone_for_typing.clone();
-                                let http = http_clone_for_typing.clone();
-                                async move {
-                                    let _typing = msg.channel_id.start_typing(&http);
-                                    info!(
-                                        event = "tool_execution_typing_started",
-                                        user = %msg.author.name,
-                                        channel_id = %msg.channel_id,
-                                        "Started typing indicator for tool execution"
-                                    );
-                                }
-                            };
-
-                            match llm_service.prompt_with_context_and_sender(context, Some(sender), Some(typing_starter)).await {
-                                Ok((response, initial_sent)) => {
-                                    if initial_sent {
-                                        // this is a follow-up to a two-part response, send as regular message
-                                        if let Err(why) = msg_clone.channel_id.say(&http, response).await {
-                                            error!(
-                                                event = "follow_up_response_send_failed",
-                                                user = %msg_clone.author.name,
-                                                error = ?why,
-                                                "Error sending follow-up LLM response"
-                                            );
-                                        }
-                                    } else {
-                                        // regular single response, send as reply
-                                        if let Err(why) = msg_clone.reply(&http, response).await {
-                                            error!(
-                                                event = "llm_response_send_failed",
-                                                user = %msg_clone.author.name,
-                                                error = ?why,
-                                                "Error sending LLM response"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    error!(
-                                        event = "llm_processing_failed",
-                                        user = %msg_clone.author.name,
-                                        error = ?err,
-                                        "Error getting LLM response"
-                                    );
-                                    if let Err(why) = msg_clone.reply(&http, "Sorry, I'm having trouble processing your message right now.").await {
-                                        error!(
-                                            event = "fallback_response_send_failed",
-                                            user = %msg_clone.author.name,
-                                            error = ?why,
-                                            "Error sending fallback response"
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
-                            info!(
-                                event = "llm_disabled_for_guild",
-                                guild_id = %guild_id,
-                                user = %msg_clone.author.name,
-                                "LLM disabled for guild, ignoring message"
-                            );
-                        }
-                    } else {
-                        info!(
-                            event = "llm_setting_not_found",
-                            guild_id = %guild_id,
-                            user = %msg_clone.author.name,
-                            "No LLM setting found for guild, ignoring message"
-                        );
-                    }
-                });
-            }
+            self.process_llm_message(ctx, msg).await;
         }
     }
 }
@@ -467,7 +80,210 @@ impl LLMHandler {
         Self {
             guild_service,
             llm_service,
-            http_client: Client::new(),
+        }
+    }
+
+    async fn process_llm_message(&self, ctx: Context, msg: Message) {
+        self.process_llm_message_with_error_handling(ctx, msg, true).await;
+    }
+
+    async fn process_llm_message_silent(&self, ctx: Context, msg: Message) {
+        self.process_llm_message_with_error_handling(ctx, msg, false).await;
+    }
+
+    async fn process_llm_message_with_error_handling(&self, ctx: Context, msg: Message, send_error_response: bool) {
+        if let Some(guild_id) = msg.guild_id {
+            let guild_service = Arc::clone(&self.guild_service);
+            let llm_service = Arc::clone(&self.llm_service);
+            let http = Arc::clone(&ctx.http);
+            let msg_clone = msg;
+
+            tokio::spawn(async move {
+                if let Some(llm_setting) = guild_service
+                    .get_guild_setting(guild_id.get() as i64, "llm")
+                    .await
+                {
+                    if llm_setting.as_bool().unwrap_or(false) {
+                        info!(
+                            event = "llm_response_triggered",
+                            user = %msg_clone.author.name,
+                            guild_id = %guild_id,
+                            channel_id = %msg_clone.channel_id,
+                            "LLM enabled - responding to message from user"
+                        );
+
+                        let _typing = msg_clone.channel_id.start_typing(&http);
+                        info!(
+                            event = "typing_indicator_started",
+                            user = %msg_clone.author.name,
+                            channel_id = %msg_clone.channel_id,
+                            "Started typing indicator"
+                        );
+
+                        // create a helper to handle image processing in the async closure
+                        let image_processor = ImageProcessor::new();
+                        
+                        let reply_chain_messages =
+                            image_processor.get_reply_chain_context(&http, &msg_clone)
+                                .await;
+
+                        info!(
+                            event = "reply_chain_context_gathered",
+                            user = %msg_clone.author.name,
+                            channel_id = %msg_clone.channel_id,
+                            message_count = reply_chain_messages.len(),
+                            messages = ?reply_chain_messages.iter().map(|m| format!("{}: {}", m.user_display_name, m.content)).collect::<Vec<_>>(),
+                            "Gathered reply chain context"
+                        );
+                        let user_display_name =
+                            msg_clone.author_nick(&http).await.unwrap_or_else(|| {
+                                msg_clone
+                                    .author
+                                    .display_name().to_string()
+                            });
+
+                        // process images from the current message
+                        let current_images = image_processor.process_message_images(&msg_clone).await;
+
+                        let bot_user_id = ctx.cache.current_user().id.get();
+                        let user_info = LLMHandler::gather_user_info(
+                            &reply_chain_messages,
+                            &msg_clone,
+                            &user_display_name,
+                            bot_user_id,
+                        )
+                        .await;
+
+                        let referenced_message = if let Some(ref ref_msg) = msg_clone.referenced_message {
+                            let ref_user_display_name = if ref_msg.author.bot {
+                                "Chloe".to_string()
+                            } else {
+                                ref_msg.author_nick(&http).await.unwrap_or_else(|| {
+                                    ref_msg.author.display_name().to_string()
+                                })
+                            };
+                            
+                            let ref_images = image_processor.process_message_images(ref_msg).await;
+                            
+                            Some(MessageContext {
+                                user_display_name: ref_user_display_name,
+                                user_id: ref_msg.author.id.get(),
+                                content: ref_msg.content.clone(),
+                                is_bot: ref_msg.author.bot,
+                                channel_id: ref_msg.channel_id.get(),
+                                images: ref_images,
+                            })
+                        } else {
+                            None
+                        };
+
+                        let context = ConversationContext {
+                            current_user: user_display_name,
+                            current_message: msg_clone.content.clone(),
+                            current_images,
+                            recent_messages: reply_chain_messages,
+                            user_info,
+                            referenced_message,
+                        };
+
+                        // create a sender for immediate responses (two-part tool calls)
+                        let http_clone = Arc::clone(&http);
+                        let msg_clone_for_sender = msg_clone.clone();
+                        let _sender = move |initial_text: String| {
+                            let http = Arc::clone(&http_clone);
+                            let msg = msg_clone_for_sender.clone();
+                            async move {
+                                if let Err(why) = msg.reply(&http, initial_text).await {
+                                    error!(
+                                        event = "initial_response_send_failed",
+                                        user = %msg.author.name,
+                                        error = ?why,
+                                        "Error sending initial LLM response"
+                                    );
+                                }
+                            }
+                        };
+
+                        // create a typing starter for tool execution
+                        let msg_clone_for_typing = msg_clone.clone();
+                        let http_clone_for_typing = Arc::clone(&http);
+                        let typing_starter = move || {
+                            let msg = msg_clone_for_typing.clone();
+                            let http = http_clone_for_typing.clone();
+                            async move {
+                                let _typing = msg.channel_id.start_typing(&http);
+                                info!(
+                                    event = "tool_execution_typing_started",
+                                    user = %msg.author.name,
+                                    channel_id = %msg.channel_id,
+                                    "Started typing indicator for tool execution"
+                                );
+                            }
+                        };
+
+                        // Create Discord context for tool execution
+                        let discord_context = crate::tools::DiscordContext {
+                            http: Arc::clone(&http),
+                            channel_id: msg_clone.channel_id,
+                            message_id: msg_clone.id,
+                            guild_id: msg_clone.guild_id,
+                        };
+
+                        match llm_service.prompt_with_context_and_sender_with_discord(context, None::<fn(String) -> std::future::Ready<()>>, Some(typing_starter), Some(&discord_context)).await {
+                            Ok(llm_response) => {
+                                info!(
+                                    event = "llm_response_received",
+                                    user = %msg_clone.author.name,
+                                    response_length = llm_response.raw_text.len(),
+                                    "Received LLM response, Discord tools should have been executed automatically"
+                                );
+                                
+                                // With direct tool execution, all Discord actions should already be complete
+                                // No additional processing needed - tools handled everything directly
+                            }
+                            Err(err) => {
+                                error!(
+                                    event = "llm_processing_failed",
+                                    user = %msg_clone.author.name,
+                                    error = ?err,
+                                    send_error_response = send_error_response,
+                                    "Error getting LLM response"
+                                );
+                                if send_error_response {
+                                    if let Err(why) = msg_clone.reply(&http, "Sorry, I'm having trouble processing your message right now.").await {
+                                        error!(
+                                            event = "fallback_response_send_failed",
+                                            user = %msg_clone.author.name,
+                                            error = ?why,
+                                            "Error sending fallback response"
+                                        );
+                                    }
+                                } else {
+                                    info!(
+                                        event = "llm_processing_failed_silent",
+                                        user = %msg_clone.author.name,
+                                        "LLM processing failed for random reply, staying silent"
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        info!(
+                            event = "llm_disabled_for_guild",
+                            guild_id = %guild_id,
+                            user = %msg_clone.author.name,
+                            "LLM disabled for guild, ignoring message"
+                        );
+                    }
+                } else {
+                    info!(
+                        event = "llm_setting_not_found",
+                        guild_id = %guild_id,
+                        user = %msg_clone.author.name,
+                        "No LLM setting found for guild, ignoring message"
+                    );
+                }
+            });
         }
     }
 
@@ -510,3 +326,4 @@ impl LLMHandler {
         user_info
     }
 }
+

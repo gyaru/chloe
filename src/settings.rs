@@ -49,9 +49,13 @@ impl Settings {
             "Starting to load global settings from database"
         );
         
-        if let Ok(row) = sqlx::query("SELECT prompt FROM chloe_settings WHERE id = 1")
-            .fetch_one(db_pool)
-            .await
+        if let Ok(row) = sqlx::query(
+            "SELECT p.content as prompt FROM chloe_settings s 
+             JOIN chloe_prompts p ON s.prompt_id = p.id 
+             WHERE s.id = 1"
+        )
+        .fetch_one(db_pool)
+        .await
         {
             let prompt: String = row.get("prompt");
             
@@ -100,5 +104,82 @@ impl Settings {
             "Reloading global settings from database"
         );
         self.load_global_settings(db_pool).await
+    }
+
+    pub async fn create_new_prompt_version(&self, db_pool: &PgPool, content: &str, created_by: Option<&str>) -> Result<String, sqlx::Error> {
+        info!(
+            event = "new_prompt_version_creating",
+            content_length = content.len(),
+            created_by = created_by.unwrap_or("unknown"),
+            "Creating new prompt version"
+        );
+
+        // Get the next version number
+        let next_version: i32 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM chloe_prompts"
+        )
+        .fetch_one(db_pool)
+        .await?;
+
+        // Create new prompt version
+        let prompt_id = sqlx::query_scalar::<_, String>(
+            "INSERT INTO chloe_prompts (version, content, created_by, is_active) VALUES ($1, $2, $3, false) RETURNING id"
+        )
+        .bind(next_version)
+        .bind(content)
+        .bind(created_by.unwrap_or("unknown"))
+        .fetch_one(db_pool)
+        .await?;
+
+        info!(
+            event = "new_prompt_version_created",
+            prompt_id = %prompt_id,
+            version = next_version,
+            created_by = created_by.unwrap_or("unknown"),
+            "New prompt version created"
+        );
+
+        Ok(prompt_id)
+    }
+
+    pub async fn activate_prompt_version(&self, db_pool: &PgPool, prompt_id: &str) -> Result<(), sqlx::Error> {
+        info!(
+            event = "prompt_version_activating",
+            prompt_id = %prompt_id,
+            "Activating prompt version"
+        );
+
+        // Start transaction to ensure consistency
+        let mut tx = db_pool.begin().await?;
+
+        // Deactivate all other prompts
+        sqlx::query("UPDATE chloe_prompts SET is_active = false")
+            .execute(&mut *tx)
+            .await?;
+
+        // Activate the specified prompt
+        sqlx::query("UPDATE chloe_prompts SET is_active = true WHERE id = $1")
+            .bind(prompt_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Update settings to reference the new prompt
+        sqlx::query("UPDATE chloe_settings SET prompt_id = $1, modified_at = CURRENT_TIMESTAMP WHERE id = 1")
+            .bind(prompt_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        // Reload settings
+        self.reload_global_settings(db_pool).await?;
+
+        info!(
+            event = "prompt_version_activated",
+            prompt_id = %prompt_id,
+            "Prompt version activated and settings reloaded"
+        );
+
+        Ok(())
     }
 }

@@ -15,6 +15,7 @@ mod schema;
 mod services;
 mod settings;
 mod tools;
+mod utils;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
@@ -70,6 +71,7 @@ async fn main() -> Result<()> {
     // Initialize services
     let app_settings = settings::Settings::new();
     let guild_service = Arc::new(services::guild_service::GuildService::new(db_pool.clone()));
+    let user_service = Arc::new(services::user_service::UserService::new(db_pool.clone()));
     let llm_service = Arc::new(services::llm_service::LlmService::new(Arc::new(app_settings.clone()))?);
     
 
@@ -84,6 +86,7 @@ async fn main() -> Result<()> {
         db_pool.clone(),
         app_settings.clone(),
         Arc::clone(&guild_service),
+        Arc::clone(&user_service),
     );
     tokio::spawn(async move {
         queue_listener.start_listening().await;

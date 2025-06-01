@@ -1,4 +1,4 @@
-use super::{Tool, ToolCall, ToolResult};
+use super::{Tool, ToolCall, ToolResult, DiscordContext};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +33,11 @@ impl ToolExecutor {
             .collect()
     }
 
-    pub async fn execute_tool(&self, tool_call: ToolCall) -> ToolResult {
+    pub async fn execute_tool(&self, tool_call: ToolCall, discord_context: Option<&DiscordContext>) -> ToolResult {
+        self.execute_tool_with_smart_context(tool_call, discord_context).await
+    }
+
+    pub async fn execute_tool_with_smart_context(&self, tool_call: ToolCall, discord_context: Option<&DiscordContext>) -> ToolResult {
         info!(
             event = "tool_execution_start",
             tool_name = %tool_call.name,
@@ -44,7 +48,22 @@ impl ToolExecutor {
 
         let result = match self.tools.get(&tool_call.name) {
             Some(tool) => {
-                match tool.execute(tool_call.parameters).await {
+                // Check if this tool needs Discord context
+                let context_to_pass = if tool.needs_discord_context() {
+                    if discord_context.is_none() {
+                        return ToolResult {
+                            id: tool_call.id,
+                            success: false,
+                            result: String::new(),
+                            error: Some(format!("Tool '{}' requires Discord context but none was provided", tool_call.name)),
+                        };
+                    }
+                    discord_context
+                } else {
+                    None // Don't pass Discord context for tools that don't need it
+                };
+
+                match tool.execute(tool_call.parameters, context_to_pass).await {
                     Ok(result) => {
                         info!(
                             event = "tool_execution_success",
@@ -98,5 +117,11 @@ impl ToolExecutor {
 
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.contains_key(name)
+    }
+
+    pub fn tool_needs_result_feedback(&self, name: &str) -> bool {
+        self.tools.get(name)
+            .map(|tool| tool.needs_result_feedback())
+            .unwrap_or(true) // Default to true if tool not found
     }
 }

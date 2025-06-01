@@ -246,6 +246,7 @@ dependencies = [
  "chrono",
  "lazy_static",
  "poise",
+ "rand",
  "redis",
  "regex",
  "reqwest 0.12.15",

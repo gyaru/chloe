@@ -11,6 +11,11 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
         CREATE TABLE IF NOT EXISTS chloe_users (
             id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
             snowflake_id BIGINT UNIQUE NOT NULL,
+            username VARCHAR(255),
+            global_name VARCHAR(255),
+            avatar VARCHAR(255),
+            banner VARCHAR(255),
+            superadmin BOOLEAN NOT NULL DEFAULT false,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -52,20 +57,46 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
         )
     "#;
 
+    // create chloe_prompts table for versioned prompts
+    let create_prompts_table = r#"
+        CREATE TABLE IF NOT EXISTS chloe_prompts (
+            id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+            version INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_by VARCHAR(255),
+            is_active BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(version)
+        )
+    "#;
+
     // create chloe_settings table for global bot settings
     let create_global_settings_table = r#"
         CREATE TABLE IF NOT EXISTS chloe_settings (
             id INTEGER PRIMARY KEY DEFAULT 1,
-            prompt TEXT NOT NULL DEFAULT 'You''re Chloe, a discord bot.',
+            prompt_id VARCHAR(255) REFERENCES chloe_prompts(id),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT single_row CHECK (id = 1)
         )
     "#;
 
-    // cxecute table creation
+    // execute table creation
     sqlx::query(create_users_table).execute(db_pool).await?;
     info!("created/verified chloe_users table");
+
+    // Add new columns if they don't exist (migrations)
+    let add_user_columns = r#"
+        ALTER TABLE chloe_users 
+        ADD COLUMN IF NOT EXISTS username VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS global_name VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS avatar VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS banner VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS superadmin BOOLEAN NOT NULL DEFAULT false
+    "#;
+    sqlx::query(add_user_columns).execute(db_pool).await?;
+    info!("ensured user profile columns exist in chloe_users table");
 
     sqlx::query(create_guilds_table).execute(db_pool).await?;
     info!("created/verified chloe_guilds table");
@@ -77,6 +108,9 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
         .execute(db_pool)
         .await?;
     info!("created/verified chloe_guild_users table");
+
+    sqlx::query(create_prompts_table).execute(db_pool).await?;
+    info!("created/verified chloe_prompts table");
 
     sqlx::query(create_global_settings_table)
         .execute(db_pool)
@@ -217,11 +251,22 @@ pub async fn ensure_global_settings(db_pool: &PgPool) -> Result<(), sqlx::Error>
         .await?;
 
     if existing_settings.is_none() {
-        sqlx::query("INSERT INTO chloe_settings (id, prompt) VALUES (1, $1)")
-            .bind("You're Chloe, a discord bot.")
+        // First, create a default prompt
+        let prompt_id = sqlx::query_scalar::<_, String>(
+            "INSERT INTO chloe_prompts (version, content, created_by, is_active) VALUES (1, $1, $2, true) RETURNING id"
+        )
+        .bind("You're Chloe, a discord bot.")
+        .bind("system")
+        .fetch_one(db_pool)
+        .await?;
+
+        // Then create the settings row referencing the prompt
+        sqlx::query("INSERT INTO chloe_settings (id, prompt_id) VALUES (1, $1)")
+            .bind(&prompt_id)
             .execute(db_pool)
             .await?;
-        info!("Created default global settings");
+        
+        info!("Created default global settings with prompt version 1");
     }
 
     Ok(())
