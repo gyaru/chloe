@@ -54,14 +54,19 @@ impl UserService {
         Self { db_pool }
     }
 
-    pub async fn authenticate_user_global(&self, discord_data: DiscordUserData) -> Result<UserInfo, sqlx::Error> {
+    pub async fn authenticate_user_global(
+        &self,
+        discord_data: DiscordUserData,
+    ) -> Result<UserInfo, sqlx::Error> {
         info!(
             event = "user_global_auth_started",
             user_id = %discord_data.id,
             "Starting global user authentication"
         );
 
-        let user_snowflake_id: i64 = discord_data.id.parse()
+        let user_snowflake_id: i64 = discord_data
+            .id
+            .parse()
             .map_err(|_| sqlx::Error::Protocol("Invalid user ID format".to_string()))?;
 
         // Start a transaction for consistency
@@ -80,7 +85,7 @@ impl UserService {
                 banner = EXCLUDED.banner,
                 modified_at = CURRENT_TIMESTAMP 
             RETURNING id
-            "#
+            "#,
         )
         .bind(user_snowflake_id)
         .bind(&discord_data.username)
@@ -103,7 +108,9 @@ impl UserService {
         let user_info = UserInfo {
             id: user_internal_id,
             snowflake_id: user_snowflake_id,
-            username: user_row.get::<Option<String>, _>("username").unwrap_or_default(),
+            username: user_row
+                .get::<Option<String>, _>("username")
+                .unwrap_or_default(),
             global_name: user_row.get("global_name"),
             avatar: user_row.get("avatar"),
             banner: user_row.get("banner"),
@@ -122,7 +129,10 @@ impl UserService {
         Ok(user_info)
     }
 
-    pub async fn authenticate_user(&self, request: UserAuthRequest) -> Result<UserInfo, sqlx::Error> {
+    pub async fn authenticate_user(
+        &self,
+        request: UserAuthRequest,
+    ) -> Result<UserInfo, sqlx::Error> {
         info!(
             event = "user_auth_started",
             user_id = %request.discord_data.id,
@@ -131,10 +141,15 @@ impl UserService {
             "Starting user authentication"
         );
 
-        let user_snowflake_id: i64 = request.discord_data.id.parse()
+        let user_snowflake_id: i64 = request
+            .discord_data
+            .id
+            .parse()
             .map_err(|_| sqlx::Error::Protocol("Invalid user ID format".to_string()))?;
-        
-        let guild_snowflake_id: i64 = request.guild_snowflake.parse()
+
+        let guild_snowflake_id: i64 = request
+            .guild_snowflake
+            .parse()
             .map_err(|_| sqlx::Error::Protocol("Invalid guild ID format".to_string()))?;
 
         // Start a transaction for consistency
@@ -153,7 +168,7 @@ impl UserService {
                 banner = EXCLUDED.banner,
                 modified_at = CURRENT_TIMESTAMP 
             RETURNING id
-            "#
+            "#,
         )
         .bind(user_snowflake_id)
         .bind(&request.discord_data.username)
@@ -164,12 +179,11 @@ impl UserService {
         .await?;
 
         // 2. Get guild internal ID
-        let guild_internal_id = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM chloe_guilds WHERE snowflake_id = $1"
-        )
-        .bind(guild_snowflake_id)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let guild_internal_id =
+            sqlx::query_scalar::<_, String>("SELECT id FROM chloe_guilds WHERE snowflake_id = $1")
+                .bind(guild_snowflake_id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
         let guild_role = if let Some(guild_id) = guild_internal_id {
             // 3. Upsert user in guild (if guild exists)
@@ -179,7 +193,7 @@ impl UserService {
                 VALUES ($1, $2, 'member') 
                 ON CONFLICT (guild_id, user_id) 
                 DO UPDATE SET modified_at = CURRENT_TIMESTAMP
-                "#
+                "#,
             )
             .bind(&guild_id)
             .bind(&user_internal_id)
@@ -188,7 +202,7 @@ impl UserService {
 
             // 4. Get user's role in the guild
             let role = sqlx::query_scalar::<_, String>(
-                "SELECT role FROM chloe_guild_users WHERE guild_id = $1 AND user_id = $2"
+                "SELECT role FROM chloe_guild_users WHERE guild_id = $1 AND user_id = $2",
             )
             .bind(&guild_id)
             .bind(&user_internal_id)
@@ -218,7 +232,9 @@ impl UserService {
         let user_info = UserInfo {
             id: user_internal_id,
             snowflake_id: user_snowflake_id,
-            username: user_row.get::<Option<String>, _>("username").unwrap_or_default(),
+            username: user_row
+                .get::<Option<String>, _>("username")
+                .unwrap_or_default(),
             global_name: user_row.get("global_name"),
             avatar: user_row.get("avatar"),
             banner: user_row.get("banner"),
@@ -286,7 +302,10 @@ impl UserService {
         }
     }
 
-    pub async fn get_users(&self, user_snowflake_ids: Vec<i64>) -> Result<HashMap<i64, UserInfo>, sqlx::Error> {
+    pub async fn get_users(
+        &self,
+        user_snowflake_ids: Vec<i64>,
+    ) -> Result<HashMap<i64, UserInfo>, sqlx::Error> {
         info!(
             event = "get_users_started",
             count = user_snowflake_ids.len(),
@@ -336,7 +355,10 @@ impl UserService {
         Ok(result)
     }
 
-    pub async fn get_users_by_internal_ids(&self, user_internal_ids: Vec<String>) -> Result<HashMap<String, UserInfo>, sqlx::Error> {
+    pub async fn get_users_by_internal_ids(
+        &self,
+        user_internal_ids: Vec<String>,
+    ) -> Result<HashMap<String, UserInfo>, sqlx::Error> {
         info!(
             event = "get_users_by_internal_ids_started",
             count = user_internal_ids.len(),
@@ -386,7 +408,11 @@ impl UserService {
         Ok(result)
     }
 
-    pub async fn get_user_with_guild_role(&self, user_snowflake_id: i64, guild_snowflake_id: i64) -> Result<Option<UserInfo>, sqlx::Error> {
+    pub async fn get_user_with_guild_role(
+        &self,
+        user_snowflake_id: i64,
+        guild_snowflake_id: i64,
+    ) -> Result<Option<UserInfo>, sqlx::Error> {
         info!(
             event = "get_user_with_guild_role_started",
             user_snowflake_id = user_snowflake_id,
@@ -442,7 +468,10 @@ impl UserService {
     }
 
     /// Get comprehensive auth info for a user: user details + all guilds with roles
-    pub async fn get_user_auth_info(&self, user_snowflake_id: i64) -> Result<Option<UserAuthInfo>, sqlx::Error> {
+    pub async fn get_user_auth_info(
+        &self,
+        user_snowflake_id: i64,
+    ) -> Result<Option<UserAuthInfo>, sqlx::Error> {
         info!(
             event = "get_user_auth_info_started",
             user_snowflake_id = user_snowflake_id,
@@ -473,7 +502,9 @@ impl UserService {
         let user_info = UserInfo {
             id: user_row.get("id"),
             snowflake_id: user_row.get("snowflake_id"),
-            username: user_row.get::<Option<String>, _>("username").unwrap_or_default(),
+            username: user_row
+                .get::<Option<String>, _>("username")
+                .unwrap_or_default(),
             global_name: user_row.get("global_name"),
             avatar: user_row.get("avatar"),
             banner: user_row.get("banner"),
@@ -489,7 +520,7 @@ impl UserService {
             INNER JOIN chloe_guild_users gu ON g.id = gu.guild_id
             WHERE gu.user_id = $1
             ORDER BY g.name
-            "#
+            "#,
         )
         .bind(&user_info.id)
         .fetch_all(&self.db_pool)

@@ -86,7 +86,7 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(create_users_table).execute(db_pool).await?;
     info!("created/verified chloe_users table");
 
-    // Add new columns if they don't exist (migrations)
+    // add new columns if they don't exist (migrations)
     let add_user_columns = r#"
         ALTER TABLE chloe_users 
         ADD COLUMN IF NOT EXISTS username VARCHAR(255),
@@ -117,7 +117,7 @@ pub async fn initialize_database(db_pool: &PgPool) -> Result<(), sqlx::Error> {
         .await?;
     info!("created/verified chloe_settings table");
 
-    // Create performance indexes
+    // create performance indexes
     create_performance_indexes(db_pool).await?;
 
     info!("Database schema initialization complete");
@@ -188,7 +188,7 @@ pub async fn sync_guilds(
                     Ok(_) => {
                         info!("Synced guild: {} ({})", guild.name, guild_id);
 
-                        // Get the guild's internal ID
+                        // get the guild's internal ID
                         if let Ok(guild_row) =
                             sqlx::query("SELECT id FROM chloe_guilds WHERE snowflake_id = $1")
                                 .bind(guild_id.get() as i64)
@@ -220,7 +220,7 @@ pub async fn sync_guilds(
                                 info!("Added guild owner as admin for guild: {}", guild.name);
                             }
 
-                            // Create default settings if they don't exist
+                            // create default settings if they don't exist
                             if let Err(e) =
                                 create_default_settings(db_pool, &guild_internal_id).await
                             {
@@ -265,7 +265,7 @@ pub async fn ensure_global_settings(db_pool: &PgPool) -> Result<(), sqlx::Error>
             .bind(&prompt_id)
             .execute(db_pool)
             .await?;
-        
+
         info!("Created default global settings with prompt version 1");
     }
 

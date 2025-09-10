@@ -1,7 +1,7 @@
 use super::Tool;
-use serde_json::{json, Value};
-use std::collections::HashMap;
 use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 
 pub struct GetTimeTool;
 
@@ -23,8 +23,15 @@ impl Tool for GetTimeTool {
         })
     }
 
-    async fn execute(&self, _parameters: HashMap<String, Value>, _discord_context: Option<&super::DiscordContext>) -> Result<String, String> {
+    async fn execute(
+        &self,
+        _parameters: HashMap<String, Value>,
+        _discord_context: Option<&super::DiscordContext>,
+    ) -> Result<String, String> {
         let now: DateTime<Utc> = Utc::now();
-        Ok(format!("Current UTC time: {}", now.format("%Y-%m-%d %H:%M:%S UTC")))
+        Ok(format!(
+            "Current UTC time: {}",
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        ))
     }
 }

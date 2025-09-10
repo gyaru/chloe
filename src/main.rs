@@ -8,6 +8,7 @@ use tracing::{error, info};
 
 mod commands;
 mod database;
+mod error;
 mod queue;
 mod reactions;
 mod redis_client;
@@ -36,10 +37,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!(
-        event = "bot_startup",
-        "Starting chloe 💅💄"
-    );
+    info!(event = "bot_startup", "Starting chloe 💅💄");
 
     let redis_url = std::env::var("REDIS_URL").expect("Expected REDIS_URL in environment");
     let redis_client = redis::Client::open(redis_url)?;
@@ -68,12 +66,12 @@ async fn main() -> Result<()> {
         "Connected to redis"
     );
 
-    // Initialize services
     let app_settings = settings::Settings::new();
     let guild_service = Arc::new(services::guild_service::GuildService::new(db_pool.clone()));
     let user_service = Arc::new(services::user_service::UserService::new(db_pool.clone()));
-    let llm_service = Arc::new(services::llm_service::LlmService::new(Arc::new(app_settings.clone()))?);
-    
+    let llm_service = Arc::new(services::llm_service::LlmService::new(Arc::new(
+        app_settings.clone(),
+    ))?);
 
     let redis_client_for_framework = redis_client.clone();
     let db_pool_for_framework = db_pool.clone();

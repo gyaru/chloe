@@ -1,7 +1,7 @@
 use super::Tool;
-use serde_json::{json, Value};
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize)]
 struct ExaSearchRequest {
@@ -54,11 +54,11 @@ impl WebSearchTool {
     pub fn new() -> Self {
         let api_key = std::env::var("EXA_KEY").ok();
         let has_key = api_key.is_some();
-        
+
         if !has_key {
             eprintln!("Warning: EXA_KEY environment variable not set. Web search will not work.");
         }
-        
+
         Self {
             client: reqwest::Client::new(),
             api_key,
@@ -89,12 +89,19 @@ impl Tool for WebSearchTool {
         })
     }
 
-    async fn execute(&self, parameters: HashMap<String, Value>, _discord_context: Option<&super::DiscordContext>) -> Result<String, String> {
-        let query = parameters.get("query")
+    async fn execute(
+        &self,
+        parameters: HashMap<String, Value>,
+        _discord_context: Option<&super::DiscordContext>,
+    ) -> Result<String, String> {
+        let query = parameters
+            .get("query")
             .and_then(|v| v.as_str())
             .ok_or("Missing or invalid 'query' parameter")?;
 
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or("EXA_KEY environment variable not set")?;
 
         let search_request = ExaSearchRequest {
@@ -111,7 +118,8 @@ impl Tool for WebSearchTool {
             category: None,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://api.exa.ai/search")
             .header("accept", "application/json")
             .header("content-type", "application/json")
@@ -124,7 +132,10 @@ impl Tool for WebSearchTool {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Exa API request failed with status {}: {}", status, error_text));
+            return Err(format!(
+                "Exa API request failed with status {}: {}",
+                status, error_text
+            ));
         }
 
         let search_response: ExaSearchResponse = response
@@ -137,7 +148,7 @@ impl Tool for WebSearchTool {
         }
 
         let mut result_text = format!("Search results for '{}':\n\n", query);
-        
+
         if let Some(autoprompt) = &search_response.autoprompt_string {
             result_text.push_str(&format!("Refined query: {}\n\n", autoprompt));
         }
@@ -145,19 +156,19 @@ impl Tool for WebSearchTool {
         for (i, result) in search_response.results.iter().enumerate() {
             result_text.push_str(&format!("{}. **{}**\n", i + 1, result.title));
             result_text.push_str(&format!("   URL: {}\n", result.url));
-            
+
             if let Some(author) = &result.author {
                 result_text.push_str(&format!("   Author: {}\n", author));
             }
-            
+
             if let Some(published_date) = &result.published_date {
                 result_text.push_str(&format!("   Published: {}\n", published_date));
             }
-            
+
             if let Some(score) = result.score {
                 result_text.push_str(&format!("   Relevance: {:.2}\n", score));
             }
-            
+
             if let Some(text) = &result.text {
                 let snippet = if text.len() > 200 {
                     format!("{}...", &text[..200])
@@ -166,7 +177,7 @@ impl Tool for WebSearchTool {
                 };
                 result_text.push_str(&format!("   Preview: {}\n", snippet));
             }
-            
+
             result_text.push('\n');
         }
 

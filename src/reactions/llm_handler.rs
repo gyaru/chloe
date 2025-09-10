@@ -2,7 +2,7 @@ use crate::services::{
     guild_service::GuildService,
     llm_service::{ConversationContext, LlmService, MessageContext, UserInfo},
 };
-use crate::utils::ImageProcessor;
+use crate::utils::{ImageProcessor, MessageSanitizer};
 use serenity::{async_trait, model::channel::Message, prelude::*};
 use std::{collections::HashSet, sync::Arc};
 use tracing::{error, info};
@@ -21,7 +21,8 @@ impl EventHandler for LLMHandler {
 
         // Check for random reply first
         if let Some(guild_id) = msg.guild_id {
-            if let Some(random_reply_setting) = self.guild_service
+            if let Some(random_reply_setting) = self
+                .guild_service
                 .get_guild_setting(guild_id.get() as i64, "randomReply")
                 .await
             {
@@ -30,9 +31,9 @@ impl EventHandler for LLMHandler {
                         if let Some(channel_str) = channel_value.as_str() {
                             if let Ok(target_channel_id) = channel_str.parse::<u64>() {
                                 if msg.channel_id.get() == target_channel_id {
-                                    // 1 in 30 chance to respond
-                                    let random_number: u32 = rand::random::<u32>() % 30 + 1;
-                                    
+                                    // 1 in 100 chance to respond
+                                    let random_number: u32 = rand::random::<u32>() % 100 + 1;
+
                                     if random_number == 1 {
                                         info!(
                                             event = "random_reply_triggered",
@@ -41,14 +42,19 @@ impl EventHandler for LLMHandler {
                                             channel_id = %msg.channel_id,
                                             "Random reply triggered (1/30 chance)"
                                         );
-                                        
+
                                         // Process this message with LLM if LLM is enabled
-                                        if let Some(llm_setting) = self.guild_service
+                                        if let Some(llm_setting) = self
+                                            .guild_service
                                             .get_guild_setting(guild_id.get() as i64, "llm")
                                             .await
                                         {
                                             if llm_setting.as_bool().unwrap_or(false) {
-                                                self.process_llm_message_silent(ctx.clone(), msg.clone()).await;
+                                                self.process_llm_message_silent(
+                                                    ctx.clone(),
+                                                    msg.clone(),
+                                                )
+                                                .await;
                                                 return;
                                             }
                                         }
@@ -84,14 +90,22 @@ impl LLMHandler {
     }
 
     async fn process_llm_message(&self, ctx: Context, msg: Message) {
-        self.process_llm_message_with_error_handling(ctx, msg, true).await;
+        self.process_llm_message_with_error_handling(ctx, msg, true, false)
+            .await;
     }
 
     async fn process_llm_message_silent(&self, ctx: Context, msg: Message) {
-        self.process_llm_message_with_error_handling(ctx, msg, false).await;
+        self.process_llm_message_with_error_handling(ctx, msg, false, true)
+            .await;
     }
 
-    async fn process_llm_message_with_error_handling(&self, ctx: Context, msg: Message, send_error_response: bool) {
+    async fn process_llm_message_with_error_handling(
+        &self,
+        ctx: Context,
+        msg: Message,
+        send_error_response: bool,
+        is_random_reply: bool,
+    ) {
         if let Some(guild_id) = msg.guild_id {
             let guild_service = Arc::clone(&self.guild_service);
             let llm_service = Arc::clone(&self.llm_service);
@@ -122,10 +136,10 @@ impl LLMHandler {
 
                         // create a helper to handle image processing in the async closure
                         let image_processor = ImageProcessor::new();
-                        
-                        let reply_chain_messages =
-                            image_processor.get_reply_chain_context(&http, &msg_clone)
-                                .await;
+
+                        let reply_chain_messages = image_processor
+                            .get_reply_chain_context(&http, &msg_clone)
+                            .await;
 
                         info!(
                             event = "reply_chain_context_gathered",
@@ -135,15 +149,14 @@ impl LLMHandler {
                             messages = ?reply_chain_messages.iter().map(|m| format!("{}: {}", m.user_display_name, m.content)).collect::<Vec<_>>(),
                             "Gathered reply chain context"
                         );
-                        let user_display_name =
-                            msg_clone.author_nick(&http).await.unwrap_or_else(|| {
-                                msg_clone
-                                    .author
-                                    .display_name().to_string()
-                            });
+                        let user_display_name = msg_clone
+                            .author_nick(&http)
+                            .await
+                            .unwrap_or_else(|| msg_clone.author.display_name().to_string());
 
                         // process images from the current message
-                        let current_images = image_processor.process_message_images(&msg_clone).await;
+                        let current_images =
+                            image_processor.process_message_images(&msg_clone).await;
 
                         let bot_user_id = ctx.cache.current_user().id.get();
                         let user_info = LLMHandler::gather_user_info(
@@ -154,36 +167,51 @@ impl LLMHandler {
                         )
                         .await;
 
-                        let referenced_message = if let Some(ref ref_msg) = msg_clone.referenced_message {
-                            let ref_user_display_name = if ref_msg.author.bot {
-                                "Chloe".to_string()
-                            } else {
-                                ref_msg.author_nick(&http).await.unwrap_or_else(|| {
-                                    ref_msg.author.display_name().to_string()
+                        let referenced_message =
+                            if let Some(ref ref_msg) = msg_clone.referenced_message {
+                                let ref_user_display_name = if ref_msg.author.bot {
+                                    "Chloe".to_string()
+                                } else {
+                                    ref_msg.author_nick(&http).await.unwrap_or_else(|| {
+                                        ref_msg.author.display_name().to_string()
+                                    })
+                                };
+
+                                let ref_images =
+                                    image_processor.process_message_images(ref_msg).await;
+
+                                // Sanitize referenced message content
+                                let ref_sanitized_content = MessageSanitizer::sanitize_message(
+                                    &ref_msg.content,
+                                    &ref_user_display_name
+                                );
+
+                                Some(MessageContext {
+                                    user_display_name: ref_user_display_name,
+                                    user_id: ref_msg.author.id.get(),
+                                    content: ref_sanitized_content,
+                                    is_bot: ref_msg.author.bot,
+                                    channel_id: ref_msg.channel_id.get(),
+                                    images: ref_images,
                                 })
+                            } else {
+                                None
                             };
-                            
-                            let ref_images = image_processor.process_message_images(ref_msg).await;
-                            
-                            Some(MessageContext {
-                                user_display_name: ref_user_display_name,
-                                user_id: ref_msg.author.id.get(),
-                                content: ref_msg.content.clone(),
-                                is_bot: ref_msg.author.bot,
-                                channel_id: ref_msg.channel_id.get(),
-                                images: ref_images,
-                            })
-                        } else {
-                            None
-                        };
+
+                        // Sanitize the current message to prevent impersonation
+                        let sanitized_message = MessageSanitizer::sanitize_message(
+                            &msg_clone.content,
+                            &user_display_name
+                        );
 
                         let context = ConversationContext {
                             current_user: user_display_name,
-                            current_message: msg_clone.content.clone(),
+                            current_message: sanitized_message,
                             current_images,
                             recent_messages: reply_chain_messages,
                             user_info,
                             referenced_message,
+                            is_random_reply,
                         };
 
                         // create a sender for immediate responses (two-part tool calls)
@@ -229,7 +257,15 @@ impl LLMHandler {
                             guild_id: msg_clone.guild_id,
                         };
 
-                        match llm_service.prompt_with_context_and_sender_with_discord(context, None::<fn(String) -> std::future::Ready<()>>, Some(typing_starter), Some(&discord_context)).await {
+                        match llm_service
+                            .prompt_with_context_and_sender_with_discord(
+                                context,
+                                None::<fn(String) -> std::future::Ready<()>>,
+                                Some(typing_starter),
+                                Some(&discord_context),
+                            )
+                            .await
+                        {
                             Ok(llm_response) => {
                                 info!(
                                     event = "llm_response_received",
@@ -237,7 +273,7 @@ impl LLMHandler {
                                     response_length = llm_response.raw_text.len(),
                                     "Received LLM response, Discord tools should have been executed automatically"
                                 );
-                                
+
                                 // With direct tool execution, all Discord actions should already be complete
                                 // No additional processing needed - tools handled everything directly
                             }
@@ -287,7 +323,6 @@ impl LLMHandler {
         }
     }
 
-
     async fn gather_user_info(
         recent_messages: &[MessageContext],
         current_msg: &Message,
@@ -326,4 +361,3 @@ impl LLMHandler {
         user_info
     }
 }
-

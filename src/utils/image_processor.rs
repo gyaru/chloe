@@ -1,4 +1,5 @@
-use crate::services::llm_service::{MessageContext, ImageData};
+use crate::services::llm_service::{ImageData, MessageContext};
+use crate::utils::MessageSanitizer;
 use serenity::model::channel::Message;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -14,7 +15,10 @@ impl ImageProcessor {
         }
     }
 
-    pub async fn download_and_encode_image(&self, url: &str) -> Result<ImageData, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn download_and_encode_image(
+        &self,
+        url: &str,
+    ) -> Result<ImageData, Box<dyn std::error::Error + Send + Sync>> {
         info!(
             event = "downloading_image",
             url = url,
@@ -22,15 +26,17 @@ impl ImageProcessor {
         );
 
         let response = self.http_client.get(url).send().await?;
-        let content_type = response.headers()
+        let content_type = response
+            .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("image/jpeg")
             .to_string();
-        
+
         let bytes = response.bytes().await?;
-        let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-        
+        let base64_data =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+
         info!(
             event = "image_encoded",
             url = url,
@@ -47,11 +53,13 @@ impl ImageProcessor {
 
     pub async fn process_message_images(&self, msg: &Message) -> Vec<ImageData> {
         let mut images = Vec::new();
-        
+
         for attachment in &msg.attachments {
-            if attachment.content_type.as_ref()
+            if attachment
+                .content_type
+                .as_ref()
                 .map(|ct| ct.starts_with("image/"))
-                .unwrap_or(false) 
+                .unwrap_or(false)
             {
                 match self.download_and_encode_image(&attachment.url).await {
                     Ok(image_data) => {
@@ -75,7 +83,7 @@ impl ImageProcessor {
                 }
             }
         }
-        
+
         images
     }
 
@@ -86,20 +94,20 @@ impl ImageProcessor {
     ) -> Vec<MessageContext> {
         let mut reply_chain = Vec::new();
         let mut msg_to_follow = current_msg.referenced_message.as_ref().map(|m| m.as_ref());
-        
+
         info!(
             event = "starting_reply_chain_trace",
             current_msg_id = current_msg.id.get(),
             has_referenced_msg = msg_to_follow.is_some(),
             "Starting to trace reply chain"
         );
-        
+
         // follow the reply chain up to 15 messages
         while let Some(msg) = msg_to_follow {
             if reply_chain.len() >= 15 {
                 break;
             }
-            
+
             info!(
                 event = "processing_chain_message",
                 msg_id = msg.id.get(),
@@ -109,7 +117,7 @@ impl ImageProcessor {
                 next_ref_id = msg.referenced_message.as_ref().map(|m| m.id.get()),
                 "Processing message in reply chain"
             );
-            
+
             if msg.content.is_empty() {
                 info!(
                     event = "skipping_empty_message",
@@ -119,26 +127,32 @@ impl ImageProcessor {
                 msg_to_follow = msg.referenced_message.as_ref().map(|m| m.as_ref());
                 continue;
             }
-            
+
             let user_display_name = if msg.author.bot {
                 "Chloe".to_string()
             } else {
-                msg.author_nick(http).await.unwrap_or_else(|| {
-                    msg.author.display_name().to_string()
-                })
+                msg.author_nick(http)
+                    .await
+                    .unwrap_or_else(|| msg.author.display_name().to_string())
             };
-            
+
             let images = self.process_message_images(msg).await;
-            
+
+            // Sanitize message content to prevent impersonation
+            let sanitized_content = MessageSanitizer::sanitize_message(
+                &msg.content,
+                &user_display_name
+            );
+
             reply_chain.push(MessageContext {
                 user_display_name,
                 user_id: msg.author.id.get(),
-                content: msg.content.clone(),
+                content: sanitized_content,
                 is_bot: msg.author.bot,
                 channel_id: msg.channel_id.get(),
                 images,
             });
-            
+
             // Follow the chain if this message is also a reply
             if let Some(ref_msg) = &msg.referenced_message {
                 info!(
@@ -157,7 +171,7 @@ impl ImageProcessor {
                 msg_to_follow = None;
             }
         }
-        
+
         // if we have a short chain, try to supplement with recent channel history
         if reply_chain.len() < 8 {
             info!(
@@ -165,8 +179,11 @@ impl ImageProcessor {
                 chain_length = reply_chain.len(),
                 "Reply chain is short, fetching recent channel history"
             );
-            
-            match self.get_recent_channel_context(http, current_msg, &reply_chain).await {
+
+            match self
+                .get_recent_channel_context(http, current_msg, &reply_chain)
+                .await
+            {
                 Ok(mut additional_context) => {
                     additional_context.extend(reply_chain);
                     reply_chain = additional_context;
@@ -185,13 +202,13 @@ impl ImageProcessor {
                 }
             }
         }
-        
+
         info!(
             event = "reply_chain_complete",
             chain_length = reply_chain.len(),
             "Completed reply chain tracing"
         );
-        
+
         // reverse to get chronological order (oldest first) and return the chain
         if !reply_chain.is_empty() {
             reply_chain.reverse();
@@ -206,40 +223,55 @@ impl ImageProcessor {
         _existing_chain: &[MessageContext],
     ) -> Result<Vec<MessageContext>, Box<dyn std::error::Error + Send + Sync>> {
         let mut context = Vec::new();
-        
+
         // fetch recent messages from the channel
-        let messages = current_msg.channel_id.messages(http, serenity::builder::GetMessages::new().before(current_msg.id).limit(20)).await?;
-        
+        let messages = current_msg
+            .channel_id
+            .messages(
+                http,
+                serenity::builder::GetMessages::new()
+                    .before(current_msg.id)
+                    .limit(20),
+            )
+            .await?;
+
         for msg in messages.iter().take(12) {
-            
-            if msg.content.is_empty() || msg.author.bot && msg.author.id != http.get_current_user().await?.id {
+            if msg.content.is_empty()
+                || msg.author.bot && msg.author.id != http.get_current_user().await?.id
+            {
                 continue;
             }
-            
+
             let user_display_name = if msg.author.bot {
                 "Chloe".to_string()
             } else {
-                msg.author_nick(http).await.unwrap_or_else(|| {
-                    msg.author.display_name().to_string()
-                })
+                msg.author_nick(http)
+                    .await
+                    .unwrap_or_else(|| msg.author.display_name().to_string())
             };
-            
+
             let images = self.process_message_images(msg).await;
-            
+
+            // Sanitize message content to prevent impersonation
+            let sanitized_content = MessageSanitizer::sanitize_message(
+                &msg.content,
+                &user_display_name
+            );
+
             context.push(MessageContext {
                 user_display_name,
                 user_id: msg.author.id.get(),
-                content: msg.content.clone(),
+                content: sanitized_content,
                 is_bot: msg.author.bot,
                 channel_id: msg.channel_id.get(),
                 images,
             });
-            
+
             if context.len() >= 8 {
                 break;
             }
         }
-        
+
         Ok(context)
     }
 }

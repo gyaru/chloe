@@ -1,5 +1,5 @@
 use super::Tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub struct CalculatorTool;
@@ -27,8 +27,13 @@ impl Tool for CalculatorTool {
         })
     }
 
-    async fn execute(&self, parameters: HashMap<String, Value>, _discord_context: Option<&super::DiscordContext>) -> Result<String, String> {
-        let expression = parameters.get("expression")
+    async fn execute(
+        &self,
+        parameters: HashMap<String, Value>,
+        _discord_context: Option<&super::DiscordContext>,
+    ) -> Result<String, String> {
+        let expression = parameters
+            .get("expression")
             .and_then(|v| v.as_str())
             .ok_or("Missing or invalid 'expression' parameter")?;
 
@@ -78,7 +83,7 @@ impl Tool for CalculatorTool {
                     Err("Invalid division expression".to_string())
                 }
             }
-            _ => Err("Unsupported expression. Use format like '2 + 2', '10 * 5', etc.".to_string())
+            _ => Err("Unsupported expression. Use format like '2 + 2', '10 * 5', etc.".to_string()),
         }
     }
 }

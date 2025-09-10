@@ -1,6 +1,7 @@
 use super::Tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use crate::utils::regex_patterns::{MENTION_REGEX as DISCORD_MENTION_REGEX, URL_REGEX, EMOTICON_REGEX};
 
 pub struct DiscordSendMessageTool;
 
@@ -10,7 +11,50 @@ impl DiscordSendMessageTool {
     }
 
     fn escape_markdown_chars(text: &str) -> String {
-        text.chars()
+        // First, convert literal \n to actual newlines
+        let text_with_newlines = text.replace("\\n", "\n");
+        
+        // Then check if there are any escaped mentions and fix them
+        let unescaped_mentions = text_with_newlines
+            .replace(r"\<@", "<@")
+            .replace(r"\<#", "<#")
+            .replace(r"\<&", "<&");
+
+        // Collect all patterns to preserve
+        let mut preservable_items = Vec::new();
+        
+        // Find all Discord mentions
+        for m in DISCORD_MENTION_REGEX.find_iter(&unescaped_mentions) {
+            preservable_items.push((m.start(), m.end(), m.as_str().to_string()));
+        }
+        
+        // Find all URLs
+        for m in URL_REGEX.find_iter(&unescaped_mentions) {
+            preservable_items.push((m.start(), m.end(), m.as_str().to_string()));
+        }
+        
+        // Find all emoticons
+        for m in EMOTICON_REGEX.find_iter(&unescaped_mentions) {
+            preservable_items.push((m.start(), m.end(), m.as_str().to_string()));
+        }
+        
+        // Sort by position in reverse order for processing
+        preservable_items.sort_by_key(|&(start, _, _)| std::cmp::Reverse(start));
+
+        // Replace preservable items with placeholders
+        let mut working_text = unescaped_mentions.clone();
+        let mut placeholders = Vec::new();
+        
+        // Process in the already reversed order to maintain positions
+        for (i, &(start, end, ref content)) in preservable_items.iter().enumerate() {
+            let placeholder = format!("§PRESERVE§{}§", i);
+            working_text.replace_range(start..end, &placeholder);
+            placeholders.push((placeholder.clone(), content.clone()));
+        }
+
+        // Escape markdown characters
+        let escaped = working_text
+            .chars()
             .map(|c| match c {
                 // escape discord markdown characters
                 '*' => "\\*".to_string(),
@@ -19,10 +63,18 @@ impl DiscordSendMessageTool {
                 '~' => "\\~".to_string(),
                 '|' => "\\|".to_string(),
                 '>' => "\\>".to_string(),
-                // keep other characters as-is
+                // keep other characters as-is (including newlines)
                 _ => c.to_string(),
             })
-            .collect()
+            .collect::<String>();
+
+        // Restore all preserved items
+        let mut result = escaped;
+        for (placeholder, content) in placeholders.iter() {
+            result = result.replace(placeholder, content);
+        }
+
+        result
     }
 }
 
@@ -62,25 +114,69 @@ impl Tool for DiscordSendMessageTool {
         false // Gemini doesn't need to see "message sent successfully" - just execute and continue
     }
 
-    async fn execute(&self, parameters: HashMap<String, Value>, discord_context: Option<&super::DiscordContext>) -> Result<String, String> {
-        let raw_content = parameters.get("content")
+    async fn execute(
+        &self,
+        parameters: HashMap<String, Value>,
+        discord_context: Option<&super::DiscordContext>,
+    ) -> Result<String, String> {
+        let raw_content = parameters
+            .get("content")
             .and_then(|v| v.as_str())
             .ok_or("Missing or invalid 'content' parameter")?;
-
-        // Escape markdown characters to prevent formatting issues
-        let content = Self::escape_markdown_chars(raw_content);
         
-        // Log if escaping changed the content
-        if content != raw_content {
-            tracing::info!(
-                event = "markdown_escaped",
+        // Check for leaked reasoning patterns and strip them
+        let content_to_use = if raw_content.contains("''' storylines='''") || 
+                               raw_content.contains("Chosen response:") ||
+                               raw_content.contains("\\n\\nChosen response:") {
+            // Extract just the actual message before the reasoning leak
+            if let Some(idx) = raw_content.find("''' storylines='''") {
+                raw_content[..idx].trim()
+            } else if let Some(idx) = raw_content.find("\\n\\nChosen response:") {
+                raw_content[..idx].trim()
+            } else {
+                // Try to extract quoted response after "Chosen response:"
+                if let Some(start) = raw_content.find("Chosen response: \"") {
+                    let after_quote = &raw_content[start + 18..];
+                    if let Some(end) = after_quote.find("\"") {
+                        &after_quote[..end]
+                    } else {
+                        raw_content
+                    }
+                } else {
+                    raw_content
+                }
+            }
+        } else {
+            raw_content
+        };
+        
+        // Log if we detected and cleaned leaked reasoning
+        if content_to_use != raw_content {
+            tracing::warn!(
+                event = "gemini_reasoning_leak_detected",
                 original_length = raw_content.len(),
-                escaped_length = content.len(),
-                "Escaped markdown characters in Discord message"
+                cleaned_length = content_to_use.len(),
+                "Detected and removed leaked Gemini reasoning from message content"
             );
         }
 
-        let reply_to_original = parameters.get("reply_to_original")
+        // Escape markdown characters to prevent formatting issues
+        let content = Self::escape_markdown_chars(content_to_use);
+
+        // Log if escaping changed the content
+        if content != content_to_use {
+            let mention_count = DISCORD_MENTION_REGEX.find_iter(&content).count();
+            tracing::info!(
+                event = "markdown_escaped",
+                original_length = content_to_use.len(),
+                escaped_length = content.len(),
+                mentions_preserved = mention_count,
+                "Escaped markdown characters in Discord message while preserving mentions"
+            );
+        }
+
+        let reply_to_original = parameters
+            .get("reply_to_original")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
@@ -88,17 +184,25 @@ impl Tool for DiscordSendMessageTool {
 
         // Send the message directly
         use serenity::builder::CreateMessage;
-        
+
         let mut message_builder = CreateMessage::new().content(&content);
-        
+
         // Add reply reference if requested
         if reply_to_original {
-            message_builder = message_builder.reference_message((discord_ctx.channel_id, discord_ctx.message_id));
+            message_builder =
+                message_builder.reference_message((discord_ctx.channel_id, discord_ctx.message_id));
         }
-        
-        match discord_ctx.channel_id.send_message(&discord_ctx.http, message_builder).await {
-            Ok(_) => Ok(format!("Successfully sent message: '{}' (reply_to_original: {})", 
-                content.chars().take(50).collect::<String>(), reply_to_original)),
+
+        match discord_ctx
+            .channel_id
+            .send_message(&discord_ctx.http, message_builder)
+            .await
+        {
+            Ok(_) => Ok(format!(
+                "Successfully sent message: '{}' (reply_to_original: {})",
+                content.chars().take(50).collect::<String>(),
+                reply_to_original
+            )),
             Err(e) => Err(format!("Failed to send Discord message: {}", e)),
         }
     }

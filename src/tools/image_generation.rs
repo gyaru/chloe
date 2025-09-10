@@ -1,5 +1,5 @@
 use super::Tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub struct ImageGenerationTool {
@@ -10,7 +10,7 @@ pub struct ImageGenerationTool {
 impl ImageGenerationTool {
     pub fn new() -> Self {
         let api_key = std::env::var("GEMINI_API_KEY").ok();
-        
+
         Self {
             client: reqwest::Client::new(),
             api_key,
@@ -41,12 +41,19 @@ impl Tool for ImageGenerationTool {
         })
     }
 
-    async fn execute(&self, parameters: HashMap<String, Value>, _discord_context: Option<&super::DiscordContext>) -> Result<String, String> {
-        let prompt = parameters.get("prompt")
+    async fn execute(
+        &self,
+        parameters: HashMap<String, Value>,
+        _discord_context: Option<&super::DiscordContext>,
+    ) -> Result<String, String> {
+        let prompt = parameters
+            .get("prompt")
             .and_then(|v| v.as_str())
             .ok_or("Missing or invalid 'prompt' parameter")?;
 
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or("GEMINI_API_KEY environment variable not set")?;
 
         let url = format!(
@@ -63,7 +70,8 @@ impl Tool for ImageGenerationTool {
             }
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&request_body)
@@ -74,7 +82,10 @@ impl Tool for ImageGenerationTool {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Imagen API request failed with status {}: {}", status, error_text));
+            return Err(format!(
+                "Imagen API request failed with status {}: {}",
+                status, error_text
+            ));
         }
 
         let response_json: Value = response
@@ -85,14 +96,18 @@ impl Tool for ImageGenerationTool {
         // Extract the base64 image data from the response
         if let Some(predictions) = response_json.get("predictions").and_then(|p| p.as_array()) {
             if let Some(prediction) = predictions.get(0) {
-                if let Some(base64_data) = prediction.get("bytesBase64Encoded").and_then(|d| d.as_str()) {
-                    let mime_type = prediction.get("mimeType")
+                if let Some(base64_data) = prediction
+                    .get("bytesBase64Encoded")
+                    .and_then(|d| d.as_str())
+                {
+                    let mime_type = prediction
+                        .get("mimeType")
                         .and_then(|m| m.as_str())
                         .unwrap_or("image/png");
-                    
+
                     // Create a data URL for the image
                     let image_url = format!("data:{};base64,{}", mime_type, base64_data);
-                    
+
                     return Ok(format!("{}", image_url));
                 }
             }

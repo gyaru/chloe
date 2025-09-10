@@ -1,5 +1,5 @@
 use super::Tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub struct DiscordAddReactionTool;
@@ -41,8 +41,13 @@ impl Tool for DiscordAddReactionTool {
         false // Gemini doesn't need to see "reaction added" - just execute and continue
     }
 
-    async fn execute(&self, parameters: HashMap<String, Value>, discord_context: Option<&super::DiscordContext>) -> Result<String, String> {
-        let emoji_str = parameters.get("emoji")
+    async fn execute(
+        &self,
+        parameters: HashMap<String, Value>,
+        discord_context: Option<&super::DiscordContext>,
+    ) -> Result<String, String> {
+        let emoji_str = parameters
+            .get("emoji")
             .and_then(|v| v.as_str())
             .ok_or("Missing or invalid 'emoji' parameter")?;
 
@@ -51,17 +56,19 @@ impl Tool for DiscordAddReactionTool {
         // Parse emoji - either Unicode or custom guild emoji
         let reaction_type = if emoji_str.starts_with(':') && emoji_str.ends_with(':') {
             // Custom guild emoji format :name:
-            let emoji_name = &emoji_str[1..emoji_str.len()-1];
-            
+            let emoji_name = &emoji_str[1..emoji_str.len() - 1];
+
             // Get guild emojis to find the custom emoji
             if let Some(guild_id) = discord_ctx.guild_id {
                 let guild_emojis = match guild_id.emojis(&discord_ctx.http).await {
                     Ok(emojis) => emojis,
                     Err(e) => return Err(format!("Failed to fetch guild emojis: {}", e)),
                 };
-                
+
                 // Find the emoji by name
-                if let Some(custom_emoji) = guild_emojis.iter().find(|emoji| emoji.name == emoji_name) {
+                if let Some(custom_emoji) =
+                    guild_emojis.iter().find(|emoji| emoji.name == emoji_name)
+                {
                     serenity::model::channel::ReactionType::Custom {
                         animated: custom_emoji.animated,
                         id: custom_emoji.id,
@@ -71,7 +78,7 @@ impl Tool for DiscordAddReactionTool {
                     // Suggest common Unicode alternatives for failed custom emojis
                     let unicode_suggestion = match emoji_name.to_lowercase().as_str() {
                         "poggers" | "pog" => "😮",
-                        "kekw" | "lul" | "lol" => "😂", 
+                        "kekw" | "lul" | "lol" => "😂",
                         "sadge" | "sad" => "😢",
                         "pepehands" => "😭",
                         "monkas" | "nervous" => "😰",
@@ -82,9 +89,12 @@ impl Tool for DiscordAddReactionTool {
                         "100" | "perfect" => "💯",
                         _ => "👍", // Default fallback
                     };
-                    
+
                     // Return a helpful error with the Unicode suggestion
-                    return Err(format!("Custom emoji '{}' not found in guild. Try using Unicode emoji '{}' instead, or check the Available Custom Emojis section for valid options.", emoji_name, unicode_suggestion));
+                    return Err(format!(
+                        "Custom emoji '{}' not found in guild. Try using Unicode emoji '{}' instead, or check the Available Custom Emojis section for valid options.",
+                        emoji_name, unicode_suggestion
+                    ));
                 }
             } else {
                 return Err("Cannot use custom emoji outside of guild context".to_string());
@@ -95,7 +105,15 @@ impl Tool for DiscordAddReactionTool {
         };
 
         // Add the reaction directly
-        match discord_ctx.http.create_reaction(discord_ctx.channel_id, discord_ctx.message_id, &reaction_type).await {
+        match discord_ctx
+            .http
+            .create_reaction(
+                discord_ctx.channel_id,
+                discord_ctx.message_id,
+                &reaction_type,
+            )
+            .await
+        {
             Ok(_) => Ok(format!("Successfully added reaction: {}", emoji_str)),
             Err(e) => Err(format!("Failed to add Discord reaction: {}", e)),
         }

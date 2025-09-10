@@ -48,28 +48,30 @@ impl Settings {
             event = "global_settings_loading",
             "Starting to load global settings from database"
         );
-        
+
         if let Ok(row) = sqlx::query(
             "SELECT p.content as prompt FROM chloe_settings s 
              JOIN chloe_prompts p ON s.prompt_id = p.id 
-             WHERE s.id = 1"
+             WHERE s.id = 1",
         )
         .fetch_one(db_pool)
         .await
         {
             let prompt: String = row.get("prompt");
-            
+
             info!(
                 event = "global_settings_db_loaded",
                 prompt_length = prompt.len(),
                 "Loaded prompt from database, acquiring write lock"
             );
-            
+
             // try to get write lock with timeout to detect deadlocks
             match tokio::time::timeout(
                 tokio::time::Duration::from_secs(5),
-                self.global_data.write()
-            ).await {
+                self.global_data.write(),
+            )
+            .await
+            {
                 Ok(mut data) => {
                     data.prompt = prompt.clone();
                     info!(
@@ -85,7 +87,7 @@ impl Settings {
                     );
                     return Err(sqlx::Error::Io(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "Write lock timeout"
+                        "Write lock timeout",
                     )));
                 }
             }
@@ -106,7 +108,12 @@ impl Settings {
         self.load_global_settings(db_pool).await
     }
 
-    pub async fn create_new_prompt_version(&self, db_pool: &PgPool, content: &str, created_by: Option<&str>) -> Result<String, sqlx::Error> {
+    pub async fn create_new_prompt_version(
+        &self,
+        db_pool: &PgPool,
+        content: &str,
+        created_by: Option<&str>,
+    ) -> Result<String, sqlx::Error> {
         info!(
             event = "new_prompt_version_creating",
             content_length = content.len(),
@@ -115,11 +122,10 @@ impl Settings {
         );
 
         // Get the next version number
-        let next_version: i32 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM chloe_prompts"
-        )
-        .fetch_one(db_pool)
-        .await?;
+        let next_version: i32 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) + 1 FROM chloe_prompts")
+                .fetch_one(db_pool)
+                .await?;
 
         // Create new prompt version
         let prompt_id = sqlx::query_scalar::<_, String>(
@@ -142,7 +148,11 @@ impl Settings {
         Ok(prompt_id)
     }
 
-    pub async fn activate_prompt_version(&self, db_pool: &PgPool, prompt_id: &str) -> Result<(), sqlx::Error> {
+    pub async fn activate_prompt_version(
+        &self,
+        db_pool: &PgPool,
+        prompt_id: &str,
+    ) -> Result<(), sqlx::Error> {
         info!(
             event = "prompt_version_activating",
             prompt_id = %prompt_id,

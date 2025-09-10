@@ -2,7 +2,7 @@ use super::{settings_update, update_prompt, user_operations};
 use crate::services::guild_service::GuildService;
 use crate::services::user_service::UserService;
 use crate::settings::Settings;
-use redis::{Client, AsyncCommands, RedisResult};
+use redis::{AsyncCommands, Client, RedisResult};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::time::{Duration, sleep};
@@ -79,16 +79,17 @@ impl QueueListener {
                                 let settings = Arc::new(self.settings.clone());
                                 let db_pool = self.db_pool.clone();
                                 let message = message.to_string();
-                                
+
                                 // Process directly instead of spawning to avoid timing issues
-                                update_prompt::handle_update_prompt(&message, settings, &db_pool).await;
+                                update_prompt::handle_update_prompt(&message, settings, &db_pool)
+                                    .await;
                             }
                             "reload_settings" => {
                                 let db_pool = self.db_pool.clone();
                                 let settings = self.settings.clone();
                                 let guild_service = Arc::clone(&self.guild_service);
                                 let message = message.to_string();
-                                
+
                                 // Process directly instead of spawning to avoid timing issues
                                 settings_update::handle_update_settings(
                                     &message,
@@ -98,12 +99,18 @@ impl QueueListener {
                                 )
                                 .await;
                             }
-                            "auth_user" | "get_user" | "get_users" | "get_users_by_ids" | "get_user_auth" => {
+                            "auth_user" | "get_user" | "get_users" | "get_users_by_ids"
+                            | "get_user_auth" => {
                                 let user_service = Arc::clone(&self.user_service);
                                 let message = message.to_string();
-                                
+
                                 // Process user operations directly
-                                user_operations::handle_user_operations(&message, user_service, &self.client).await;
+                                user_operations::handle_user_operations(
+                                    &message,
+                                    user_service,
+                                    &self.client,
+                                )
+                                .await;
                             }
                             _ => {
                                 warn!(
@@ -127,7 +134,7 @@ impl QueueListener {
                             let settings = self.settings.clone();
                             let guild_service = Arc::clone(&self.guild_service);
                             let message = message.to_string();
-                            
+
                             tokio::spawn(async move {
                                 settings_update::handle_update_settings(
                                     &message,

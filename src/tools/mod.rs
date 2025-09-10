@@ -1,23 +1,23 @@
 // Individual tool modules
-pub mod time;
-pub mod web_search;
-pub mod playwright;
-pub mod image_generation;
+pub mod calculator;
 pub mod discord_message;
 pub mod discord_reaction;
-pub mod calculator;
+pub mod fetch;
+pub mod image_generation;
+pub mod time;
+pub mod web_search;
 
 // Core tool infrastructure
 pub mod tool_executor;
+pub mod tool_names;
 
 // Re-export all tools for easy access
-pub use time::GetTimeTool;
-pub use web_search::WebSearchTool;
-pub use playwright::PlaywrightWebContentTool;
-pub use image_generation::ImageGenerationTool;
 pub use discord_message::DiscordSendMessageTool;
 pub use discord_reaction::DiscordAddReactionTool;
-pub use calculator::CalculatorTool;
+pub use fetch::FetchTool;
+pub use image_generation::ImageGenerationTool;
+pub use web_search::WebSearchTool;
+pub use tool_names::ToolName;
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -26,8 +26,15 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct ToolCall {
     pub id: String,
-    pub name: String,
+    pub name: String, // Keep as String for compatibility with existing code
     pub parameters: HashMap<String, Value>,
+}
+
+impl ToolCall {
+    // Helper method to parse tool name to enum
+    pub fn tool_name(&self) -> Result<ToolName, String> {
+        ToolName::from_str(&self.name).map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,5 +64,9 @@ pub trait Tool: Send + Sync {
     fn needs_result_feedback(&self) -> bool {
         true // Default: most tools need their results fed back to Gemini
     }
-    async fn execute(&self, parameters: HashMap<String, Value>, discord_context: Option<&DiscordContext>) -> Result<String, String>;
+    async fn execute(
+        &self,
+        parameters: HashMap<String, Value>,
+        discord_context: Option<&DiscordContext>,
+    ) -> Result<String, String>;
 }
