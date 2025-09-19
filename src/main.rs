@@ -9,13 +9,13 @@ use tracing::{error, info};
 mod commands;
 mod database;
 mod error;
+mod llm;
 mod queue;
 mod reactions;
 mod redis_client;
 mod schema;
 mod services;
 mod settings;
-mod tools;
 mod utils;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -26,6 +26,7 @@ pub struct Data {
     db_pool: PgPool,
     settings: settings::Settings,
     guild_service: Arc<services::guild_service::GuildService>,
+    user_service: Arc<services::user_service::UserService>,
     llm_service: Arc<services::llm_service::LlmService>,
 }
 
@@ -69,26 +70,17 @@ async fn main() -> Result<()> {
     let app_settings = settings::Settings::new();
     let guild_service = Arc::new(services::guild_service::GuildService::new(db_pool.clone()));
     let user_service = Arc::new(services::user_service::UserService::new(db_pool.clone()));
-    let llm_service = Arc::new(services::llm_service::LlmService::new(Arc::new(
-        app_settings.clone(),
-    ))?);
+    let llm_provider = llm::ProviderFactory::create_provider()?;
+    let llm_service = Arc::new(services::llm_service::LlmService::new(
+        llm_provider,
+        Arc::new(app_settings.clone()),
+    )?);
 
     let redis_client_for_framework = redis_client.clone();
     let db_pool_for_framework = db_pool.clone();
     let settings_for_framework = app_settings.clone();
     let guild_service_for_framework = Arc::clone(&guild_service);
     let llm_service_for_framework = Arc::clone(&llm_service);
-
-    let queue_listener = queue::QueueListener::new(
-        redis_client.clone(),
-        db_pool.clone(),
-        app_settings.clone(),
-        Arc::clone(&guild_service),
-        Arc::clone(&user_service),
-    );
-    tokio::spawn(async move {
-        queue_listener.start_listening().await;
-    });
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -165,7 +157,7 @@ async fn main() -> Result<()> {
 
     let client = ClientBuilder::new(token, intents)
         .framework(framework)
-        .event_handler(reactions::llm_handler::LLMHandler::new(
+        .event_handler(reactions::llm_handler::LlmHandler::new(
             Arc::clone(&guild_service),
             Arc::clone(&llm_service),
         ))

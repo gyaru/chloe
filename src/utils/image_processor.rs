@@ -1,4 +1,5 @@
-use crate::services::llm_service::{ImageData, MessageContext};
+use crate::llm::ImageData;
+use crate::services::llm_service_v2::MessageContext;
 use crate::utils::MessageSanitizer;
 use serenity::model::channel::Message;
 use std::sync::Arc;
@@ -139,17 +140,15 @@ impl ImageProcessor {
             let images = self.process_message_images(msg).await;
 
             // Sanitize message content to prevent impersonation
-            let sanitized_content = MessageSanitizer::sanitize_message(
-                &msg.content,
-                &user_display_name
-            );
+            let sanitized_content =
+                MessageSanitizer::sanitize_message(&msg.content, &user_display_name);
 
             reply_chain.push(MessageContext {
                 user_display_name,
-                user_id: msg.author.id.get(),
+                user_id: msg.author.id.get().to_string(),
                 content: sanitized_content,
                 is_bot: msg.author.bot,
-                channel_id: msg.channel_id.get(),
+                channel_id: msg.channel_id.get().to_string(),
                 images,
             });
 
@@ -253,17 +252,15 @@ impl ImageProcessor {
             let images = self.process_message_images(msg).await;
 
             // Sanitize message content to prevent impersonation
-            let sanitized_content = MessageSanitizer::sanitize_message(
-                &msg.content,
-                &user_display_name
-            );
+            let sanitized_content =
+                MessageSanitizer::sanitize_message(&msg.content, &user_display_name);
 
             context.push(MessageContext {
                 user_display_name,
-                user_id: msg.author.id.get(),
+                user_id: msg.author.id.get().to_string(),
                 content: sanitized_content,
                 is_bot: msg.author.bot,
-                channel_id: msg.channel_id.get(),
+                channel_id: msg.channel_id.get().to_string(),
                 images,
             });
 

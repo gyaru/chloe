@@ -150,7 +150,7 @@ impl GeminiRequest {
         }
     }
 
-    pub fn with_images(mut self, images: &[crate::services::llm_service::ImageData]) -> Self {
+    pub fn with_images(mut self, images: &[crate::llm::ImageData]) -> Self {
         if let Some(content) = self.contents.get_mut(0) {
             for image in images {
                 content.parts.push(Part::InlineData {
@@ -187,9 +187,9 @@ impl GeminiRequest {
             content.parts.push(Part::FunctionCall {
                 function_call: function_call.clone(),
             });
-            content.parts.push(Part::FunctionResponse {
-                function_response,
-            });
+            content
+                .parts
+                .push(Part::FunctionResponse { function_response });
         }
         self
     }
@@ -198,9 +198,13 @@ impl GeminiRequest {
 // Helper methods for response parsing
 impl GeminiResponse {
     pub fn get_text(&self) -> Option<&str> {
-        self.candidates.as_ref()?.get(0)?
-            .content.as_ref()?
-            .parts.as_ref()?
+        self.candidates
+            .as_ref()?
+            .get(0)?
+            .content
+            .as_ref()?
+            .parts
+            .as_ref()?
             .iter()
             .find_map(|part| {
                 if let ResponsePart::Text { text } = part {
@@ -212,9 +216,13 @@ impl GeminiResponse {
     }
 
     pub fn get_function_call(&self) -> Option<&FunctionCall> {
-        self.candidates.as_ref()?.get(0)?
-            .content.as_ref()?
-            .parts.as_ref()?
+        self.candidates
+            .as_ref()?
+            .get(0)?
+            .content
+            .as_ref()?
+            .parts
+            .as_ref()?
             .iter()
             .find_map(|part| {
                 if let ResponsePart::FunctionCall { function_call } = part {
@@ -234,13 +242,15 @@ impl GeminiResponse {
     }
 
     pub fn is_blocked(&self) -> bool {
-        self.prompt_feedback.as_ref()
+        self.prompt_feedback
+            .as_ref()
             .and_then(|f| f.block_reason.as_ref())
             .is_some()
     }
 
     pub fn get_block_reason(&self) -> Option<&str> {
-        self.prompt_feedback.as_ref()
+        self.prompt_feedback
+            .as_ref()
             .and_then(|f| f.block_reason.as_deref())
     }
 }

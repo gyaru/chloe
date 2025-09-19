@@ -3,7 +3,7 @@ pub mod calculator;
 pub mod discord_message;
 pub mod discord_reaction;
 pub mod fetch;
-pub mod image_generation;
+
 pub mod time;
 pub mod web_search;
 
@@ -15,9 +15,9 @@ pub mod tool_names;
 pub use discord_message::DiscordSendMessageTool;
 pub use discord_reaction::DiscordAddReactionTool;
 pub use fetch::FetchTool;
-pub use image_generation::ImageGenerationTool;
-pub use web_search::WebSearchTool;
+
 pub use tool_names::ToolName;
+pub use web_search::WebSearchTool;
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -48,8 +48,9 @@ pub struct ToolResult {
 #[derive(Clone)]
 pub struct DiscordContext {
     pub http: Arc<serenity::http::Http>,
-    pub channel_id: serenity::model::id::ChannelId,
-    pub message_id: serenity::model::id::MessageId,
+    pub channel_id: u64,
+    pub user_id: u64,
+    pub message_id: Option<u64>,
     pub guild_id: Option<serenity::model::id::GuildId>,
 }
 

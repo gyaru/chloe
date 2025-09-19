@@ -73,7 +73,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web for current information using Exa AI's neural search. Returns relevant results with titles, URLs, authors, published dates, and content previews. MUST be used whenever users ask you to search for, find, or look up anything including: music, videos, news, products, people, places, current events, or any other information that would benefit from web search."
+        "Search the web for current information using Exa AI's neural search. Returns raw search data that you MUST process and synthesize into a helpful, conversational response. NEVER copy-paste the raw results - always analyze, summarize, and explain the information in your own words. Use this tool for: music, videos, news, products, people, places, current events, or any information requiring web search."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -147,39 +147,36 @@ impl Tool for WebSearchTool {
             return Ok(format!("No search results found for query: '{}'", query));
         }
 
-        let mut result_text = format!("Search results for '{}':\n\n", query);
+        // Format results for LLM processing, not direct user consumption
+        let mut result_text = format!("SEARCH_RESULTS_FOR_PROCESSING - Query: '{}'\n", query);
+        result_text.push_str("INSTRUCTIONS: Process this information and provide a helpful, conversational response to the user. Do not copy-paste this raw data.\n\n");
 
         if let Some(autoprompt) = &search_response.autoprompt_string {
-            result_text.push_str(&format!("Refined query: {}\n\n", autoprompt));
+            result_text.push_str(&format!("Refined search: {}\n\n", autoprompt));
         }
 
+        result_text.push_str("FOUND_INFORMATION:\n");
         for (i, result) in search_response.results.iter().enumerate() {
-            result_text.push_str(&format!("{}. **{}**\n", i + 1, result.title));
-            result_text.push_str(&format!("   URL: {}\n", result.url));
-
-            if let Some(author) = &result.author {
-                result_text.push_str(&format!("   Author: {}\n", author));
-            }
-
-            if let Some(published_date) = &result.published_date {
-                result_text.push_str(&format!("   Published: {}\n", published_date));
-            }
-
-            if let Some(score) = result.score {
-                result_text.push_str(&format!("   Relevance: {:.2}\n", score));
-            }
+            result_text.push_str(&format!("Source {}: {}\n", i + 1, result.title));
+            result_text.push_str(&format!("URL: {}\n", result.url));
 
             if let Some(text) = &result.text {
-                let snippet = if text.len() > 200 {
-                    format!("{}...", &text[..200])
+                let snippet = if text.len() > 300 {
+                    format!("{}...", &text[..300])
                 } else {
                     text.clone()
                 };
-                result_text.push_str(&format!("   Preview: {}\n", snippet));
+                result_text.push_str(&format!("Content: {}\n", snippet));
             }
 
-            result_text.push('\n');
+            if let Some(published_date) = &result.published_date {
+                result_text.push_str(&format!("Published: {}\n", published_date));
+            }
+
+            result_text.push_str("\n---\n\n");
         }
+
+        result_text.push_str("END_SEARCH_RESULTS - Now synthesize this information into a helpful response for the user.");
 
         Ok(result_text)
     }

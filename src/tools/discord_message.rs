@@ -1,7 +1,9 @@
 use super::Tool;
+use crate::utils::regex_patterns::{
+    EMOTICON_REGEX, MENTION_REGEX as DISCORD_MENTION_REGEX, URL_REGEX,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use crate::utils::regex_patterns::{MENTION_REGEX as DISCORD_MENTION_REGEX, URL_REGEX, EMOTICON_REGEX};
 
 pub struct DiscordSendMessageTool;
 
@@ -13,7 +15,7 @@ impl DiscordSendMessageTool {
     fn escape_markdown_chars(text: &str) -> String {
         // First, convert literal \n to actual newlines
         let text_with_newlines = text.replace("\\n", "\n");
-        
+
         // Then check if there are any escaped mentions and fix them
         let unescaped_mentions = text_with_newlines
             .replace(r"\<@", "<@")
@@ -22,29 +24,29 @@ impl DiscordSendMessageTool {
 
         // Collect all patterns to preserve
         let mut preservable_items = Vec::new();
-        
+
         // Find all Discord mentions
         for m in DISCORD_MENTION_REGEX.find_iter(&unescaped_mentions) {
             preservable_items.push((m.start(), m.end(), m.as_str().to_string()));
         }
-        
+
         // Find all URLs
         for m in URL_REGEX.find_iter(&unescaped_mentions) {
             preservable_items.push((m.start(), m.end(), m.as_str().to_string()));
         }
-        
+
         // Find all emoticons
         for m in EMOTICON_REGEX.find_iter(&unescaped_mentions) {
             preservable_items.push((m.start(), m.end(), m.as_str().to_string()));
         }
-        
+
         // Sort by position in reverse order for processing
         preservable_items.sort_by_key(|&(start, _, _)| std::cmp::Reverse(start));
 
         // Replace preservable items with placeholders
         let mut working_text = unescaped_mentions.clone();
         let mut placeholders = Vec::new();
-        
+
         // Process in the already reversed order to maintain positions
         for (i, &(start, end, ref content)) in preservable_items.iter().enumerate() {
             let placeholder = format!("§PRESERVE§{}§", i);
@@ -123,11 +125,12 @@ impl Tool for DiscordSendMessageTool {
             .get("content")
             .and_then(|v| v.as_str())
             .ok_or("Missing or invalid 'content' parameter")?;
-        
+
         // Check for leaked reasoning patterns and strip them
-        let content_to_use = if raw_content.contains("''' storylines='''") || 
-                               raw_content.contains("Chosen response:") ||
-                               raw_content.contains("\\n\\nChosen response:") {
+        let content_to_use = if raw_content.contains("''' storylines='''")
+            || raw_content.contains("Chosen response:")
+            || raw_content.contains("\\n\\nChosen response:")
+        {
             // Extract just the actual message before the reasoning leak
             if let Some(idx) = raw_content.find("''' storylines='''") {
                 raw_content[..idx].trim()
@@ -149,7 +152,7 @@ impl Tool for DiscordSendMessageTool {
         } else {
             raw_content
         };
-        
+
         // Log if we detected and cleaned leaked reasoning
         if content_to_use != raw_content {
             tracing::warn!(
@@ -185,24 +188,22 @@ impl Tool for DiscordSendMessageTool {
         // Send the message directly
         use serenity::builder::CreateMessage;
 
+        let channel_id = serenity::model::id::ChannelId::new(discord_ctx.channel_id);
         let mut message_builder = CreateMessage::new().content(&content);
 
-        // Add reply reference if requested
+        // Add reply reference if requested and message_id is available
         if reply_to_original {
-            message_builder =
-                message_builder.reference_message((discord_ctx.channel_id, discord_ctx.message_id));
+            if let Some(message_id) = discord_ctx.message_id {
+                let original_message_id = serenity::model::id::MessageId::new(message_id);
+                let message_reference = (channel_id, original_message_id);
+                message_builder = message_builder.reference_message(message_reference);
+            }
         }
-
-        match discord_ctx
-            .channel_id
+        match channel_id
             .send_message(&discord_ctx.http, message_builder)
             .await
         {
-            Ok(_) => Ok(format!(
-                "Successfully sent message: '{}' (reply_to_original: {})",
-                content.chars().take(50).collect::<String>(),
-                reply_to_original
-            )),
+            Ok(_) => Ok("Message sent".to_string()),
             Err(e) => Err(format!("Failed to send Discord message: {}", e)),
         }
     }

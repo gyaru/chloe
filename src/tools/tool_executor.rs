@@ -137,4 +137,49 @@ impl ToolExecutor {
             .map(|tool| tool.needs_result_feedback())
             .unwrap_or(true) // Default to true if tool not found
     }
+
+    pub async fn execute_tool_by_name(
+        &self,
+        tool_name: &str,
+        args: serde_json::Value,
+        discord_context: Option<&DiscordContext>,
+    ) -> Result<String, String> {
+        let tool = match self.tools.get(tool_name) {
+            Some(tool) => tool,
+            None => return Err(format!("Tool '{}' not found", tool_name)),
+        };
+
+        info!(
+            event = "tool_execution_starting",
+            tool_name = %tool_name,
+            "Starting tool execution"
+        );
+
+        // Convert args to HashMap
+        let parameters = match args.as_object() {
+            Some(obj) => obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            None => return Err("Tool arguments must be an object".to_string()),
+        };
+
+        match tool.execute(parameters, discord_context).await {
+            Ok(result) => {
+                info!(
+                    event = "tool_execution_success",
+                    tool_name = %tool_name,
+                    result_length = result.len(),
+                    "Tool execution completed successfully"
+                );
+                Ok(result)
+            }
+            Err(error) => {
+                error!(
+                    event = "tool_execution_error",
+                    tool_name = %tool_name,
+                    error = %error,
+                    "Tool execution failed"
+                );
+                Err(error)
+            }
+        }
+    }
 }

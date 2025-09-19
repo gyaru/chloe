@@ -105,16 +105,18 @@ impl Tool for DiscordAddReactionTool {
         };
 
         // Add the reaction directly
+        let channel_id = serenity::model::id::ChannelId::new(discord_ctx.channel_id);
+        let message_id = match discord_ctx.message_id {
+            Some(id) => serenity::model::id::MessageId::new(id),
+            None => return Err("Message ID not available for adding reaction".to_string()),
+        };
+
         match discord_ctx
             .http
-            .create_reaction(
-                discord_ctx.channel_id,
-                discord_ctx.message_id,
-                &reaction_type,
-            )
+            .create_reaction(channel_id, message_id, &reaction_type)
             .await
         {
-            Ok(_) => Ok(format!("Successfully added reaction: {}", emoji_str)),
+            Ok(_) => Ok("Reaction added".to_string()),
             Err(e) => Err(format!("Failed to add Discord reaction: {}", e)),
         }
     }
